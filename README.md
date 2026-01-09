@@ -7,4 +7,4 @@
 `npm run dev`
 
 2つ目のターミナル
-`node ./index/js`
+`node ./index.js`
