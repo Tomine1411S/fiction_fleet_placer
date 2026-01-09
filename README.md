@@ -4,7 +4,7 @@
 # 使い方(開発環境)
 ターミナルが2つ必要です。
 1つ目のターミナル
-npm run dev
+`npm run dev`
 
 2つ目のターミナル
-node ./index/js
+`node ./index/js`
