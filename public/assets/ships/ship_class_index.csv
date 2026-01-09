@@ -1,0 +1,41 @@
+ship_type_index, name_of_type
+FF, フリゲート
+FFG, ミサイルフリゲート
+
+DD, 駆逐艦
+DDG, ミサイル駆逐艦
+DE, 護衛駆逐艦
+
+CL, 巡洋艦
+CG, ミサイル巡洋艦
+CA, 重巡洋艦
+CAG, ミサイル重巡洋艦
+
+CC, 移動管制艦
+
+CV, 航空母艦
+CVL, 軽空母
+
+BB, 戦艦
+
+SS, 潜水艦
+SSG, 潜水艦
+SFAP, 強襲揚陸潜水艦
+SSV, 潜水母艦
+
+LPD, 揚陸艦
+APD, 揚陸支援艦
+
+MCS, 掃海母艦
+AM, 掃海艇
+MCM, 掃海艦
+
+AOE, 高速戦闘支援艦
+AOR, 高速補給艦
+AO, 燃料輸送艦
+AKS, 汎用輸送艦
+
+
+AGP, 小型艇母艦
+AGT, 試験艦
+ATS, 総合救難艦
