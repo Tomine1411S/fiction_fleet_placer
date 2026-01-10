@@ -30,6 +30,12 @@ function App() {
     const isRemoteMapUpdate = useRef(false);
 
     // Master Data State (Lifted from EditScreen)
+    // Base Data (Original CSV)
+    const [baseShipTypes, setBaseShipTypes] = useState([]);
+    const [baseShipClasses, setBaseShipClasses] = useState([]);
+    const [baseFleetTypes, setBaseFleetTypes] = useState([]);
+
+    // Current Working Data
     const [shipTypes, setShipTypes] = useState([]);
     const [shipClasses, setShipClasses] = useState([]);
     const [fleetTypes, setFleetTypes] = useState([]);
@@ -182,6 +188,10 @@ function App() {
                     const classesData = await loadCSV('/assets/ships/ship_type_index.csv');
                     const fleetTypesData = await loadCSV('/assets/fleets/fleet_type.csv');
 
+                    setBaseShipTypes(typesData);
+                    setBaseShipClasses(classesData);
+                    setBaseFleetTypes(fleetTypesData);
+
                     setShipTypes(typesData);
                     setShipClasses(classesData);
                     setFleetTypes(fleetTypesData);
@@ -217,6 +227,14 @@ function App() {
                     setMapImage(data.mapImage);
                     setMapImageBlob(data.mapImageBlob);
                 }
+
+                // Apply Config Overrides
+                if (data.overrides) {
+                    if (data.overrides.shipTypes) setShipTypes(data.overrides.shipTypes);
+                    if (data.overrides.shipClasses) setShipClasses(data.overrides.shipClasses);
+                    if (data.overrides.fleetTypes) setFleetTypes(data.overrides.fleetTypes);
+                    alert("設定ファイル(config)による上書き設定を適用しました。");
+                }
             } catch (err) {
                 console.error("Failed to load project:", err);
                 alert("プロジェクトの読み込みに失敗しました");
@@ -247,7 +265,15 @@ function App() {
                     onFileUpload={handleFileUpload}
                     onSaveZip={async () => {
                         try {
-                            await saveProject({ units, mapImageBlob });
+                            const overrides = {};
+                            // Helper to check for equality
+                            const hasChanged = (base, current) => JSON.stringify(base) !== JSON.stringify(current);
+
+                            if (hasChanged(baseShipTypes, shipTypes)) overrides.shipTypes = shipTypes;
+                            if (hasChanged(baseShipClasses, shipClasses)) overrides.shipClasses = shipClasses;
+                            if (hasChanged(baseFleetTypes, fleetTypes)) overrides.fleetTypes = fleetTypes;
+
+                            await saveProject({ units, mapImageBlob, mapImage, overrides });
                         } catch (e) {
                             console.error(e);
                             alert("ZIP保存に失敗しました: " + e.message);

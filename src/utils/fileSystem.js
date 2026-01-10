@@ -245,6 +245,23 @@ export const loadProject = async (file) => {
         data.units = Array.from(mergedMap.values());
     }
 
+    // 2. Config Overrides
+    const configDir = "config/";
+    const shipTypesFile = zip.file(`${configDir}ship_types.json`);
+    const shipClassesFile = zip.file(`${configDir}ship_classes.json`);
+    const fleetTypesFile = zip.file(`${configDir}fleet_types.json`);
+
+    data.overrides = {};
+    if (shipTypesFile) {
+        try { data.overrides.shipTypes = JSON.parse(await shipTypesFile.async("string")); } catch (e) { console.error(e); }
+    }
+    if (shipClassesFile) {
+        try { data.overrides.shipClasses = JSON.parse(await shipClassesFile.async("string")); } catch (e) { console.error(e); }
+    }
+    if (fleetTypesFile) {
+        try { data.overrides.fleetTypes = JSON.parse(await fleetTypesFile.async("string")); } catch (e) { console.error(e); }
+    }
+
     return data;
 };
 
@@ -319,6 +336,20 @@ export const saveProject = async (state) => {
             // 指示には特にないため、新構造のみ出力する。
         }
     });
+
+    // 3. Config Overrides
+    if (state.overrides) {
+        const configDir = zip.folder("config");
+        if (state.overrides.shipTypes) {
+            configDir.file("ship_types.json", JSON.stringify(state.overrides.shipTypes, null, 2));
+        }
+        if (state.overrides.shipClasses) {
+            configDir.file("ship_classes.json", JSON.stringify(state.overrides.shipClasses, null, 2));
+        }
+        if (state.overrides.fleetTypes) {
+            configDir.file("fleet_types.json", JSON.stringify(state.overrides.fleetTypes, null, 2));
+        }
+    }
 
     const content = await zip.generateAsync({ type: "blob" });
     saveAs(content, "deployment.zip");
