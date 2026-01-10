@@ -65,9 +65,12 @@ io.on('connection', (socket) => {
             spectatorId: isReadOnly ? inputId : spectatorId // If editor, send the spec ID to share
         });
 
-        // Send current session data if exists
+        // Send current session data if exists, ELSE send empty init to trigger sync
         if (sessions[sessionId]) {
             socket.emit('init_data', { units: sessions[sessionId].units, mapImage: sessions[sessionId].mapImage });
+        } else {
+            // New session needs explicit empty init to unlock client
+            socket.emit('init_data', { units: [], mapImage: null });
         }
     });
 

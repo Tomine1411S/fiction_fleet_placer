@@ -319,25 +319,34 @@ const MainScreen = ({ units = [], setUnits, mapImage, onSwitchScreen, onOpenSett
     // Image load handler to adjust map size/coords if needed
     // But currently using CSS transform, so maybe just ensure it displays correctly.
 
-    const copyLink = (type) => {
-        const url = new URL(window.location.href);
+    const copyLink = async (type) => {
+        try {
+            const url = new URL(window.location.href);
 
-        if (type === 'spectator') {
-            // For spectator, we use the spectatorShareId if available
-            // If we are already a spectator, our sessionId IS the spectator ID.
-            const idToShare = isSpectator ? sessionId : spectatorShareId;
-            if (idToShare) {
-                url.searchParams.set('session', idToShare);
+            if (type === 'spectator') {
+                // For spectator, we use the spectatorShareId if available
+                // If we are already a spectator, our sessionId IS the spectator ID.
+                const idToShare = isSpectator ? sessionId : spectatorShareId;
+                if (idToShare) {
+                    url.searchParams.set('session', idToShare);
+                } else {
+                    alert("観戦用IDがまだ取得できていません。少し待ってから再度お試しください。");
+                    return;
+                }
+                // Enhance UX by setting mode param (though server enforces security via ID)
+                url.searchParams.set('mode', 'spectator');
+            } else {
+                // For edit link (only available if we are editor)
+                url.searchParams.set('session', sessionId);
+                url.searchParams.delete('mode');
             }
-            // Enhance UX by setting mode param (though server enforces security via ID)
-            url.searchParams.set('mode', 'spectator');
-        } else {
-            // For edit link (only available if we are editor)
-            url.searchParams.set('session', sessionId);
-            url.searchParams.delete('mode');
+
+            await navigator.clipboard.writeText(url.toString());
+            alert(`${type === 'spectator' ? '観戦' : '共有'}リンクをクリップボードにコピーしました`);
+        } catch (err) {
+            console.error("Clipboard failed:", err);
+            alert("クリップボードへのコピーに失敗しました。\nURLを手動でコピーしてください:\n" + window.location.href);
         }
-        navigator.clipboard.writeText(url.toString());
-        alert(`${type === 'spectator' ? '観戦' : '共有'}リンクをクリップボードにコピーしました`);
     };
 
     return (

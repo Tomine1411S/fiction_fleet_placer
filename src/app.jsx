@@ -21,10 +21,10 @@ function App() {
     const [editingShipIndices, setEditingShipIndices] = useState(null); // { fleetIndex, shipIndex }
 
     // Session & Socket State
-    const [sessionId, setSessionId] = useState(null);
     const [spectatorShareId, setSpectatorShareId] = useState(null); // ID for sharing view-only access
     const [isSpectator, setIsSpectator] = useState(false);
     const [socket, setSocket] = useState(null);
+    const [isServerSynced, setIsServerSynced] = useState(false); // New: prevent overwriting server data
     const isRemoteUpdate = useRef(false); // Ref to prevents echo loops
     const isRemoteMapUpdate = useRef(false);
 
@@ -79,8 +79,10 @@ function App() {
         });
 
         newSocket.on('init_data', (data) => {
+            console.log("Received init data");
+            setIsServerSynced(true); // Mark as synced!
+
             if (data) {
-                console.log("Received init data");
                 if (Array.isArray(data)) {
                     // Legacy (units only)
                     isRemoteUpdate.current = true;
@@ -124,6 +126,9 @@ function App() {
     // --- Sync Updates to Server ---
     useEffect(() => {
         if (!socket || !sessionId) return;
+
+        // Prevent overwriting server data with initial empty state
+        if (!isServerSynced) return;
 
         // If this change came from the server (isRemoteUpdate), don't echo it back.
         if (isRemoteUpdate.current) {
@@ -203,6 +208,9 @@ function App() {
             try {
                 const data = await loadProject(file);
                 // Updates here will trigger useEffect -> emit sync
+                // Since we are loading a file, we are authoritative, so we can consider ourselves synced (ready to push)
+                setIsServerSynced(true);
+
                 setUnits(data.units || []);
                 if (data.mapImage) {
                     setMapImage(data.mapImage);
