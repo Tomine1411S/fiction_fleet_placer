@@ -22,6 +22,7 @@ function App() {
 
     // Session & Socket State
     const [sessionId, setSessionId] = useState(null);
+    const [spectatorShareId, setSpectatorShareId] = useState(null); // ID for sharing view-only access
     const [isSpectator, setIsSpectator] = useState(false);
     const [socket, setSocket] = useState(null);
     const isRemoteUpdate = useRef(false); // Ref to prevents echo loops
@@ -65,6 +66,16 @@ function App() {
         newSocket.on('connect', () => {
             console.log("Connected to server");
             newSocket.emit('join_session', sId);
+        });
+
+        // Listen for session info (Role & IDs)
+        newSocket.on('session_info', (info) => {
+            console.log("Session Info:", info);
+            setIsSpectator(info.role === 'spectator');
+            // Store spectator ID for sharing. 
+            // If editor, info.spectatorId is the view-only ID.
+            // If spectator, info.spectatorId is the same ID they used (view-only).
+            setSpectatorShareId(info.spectatorId);
         });
 
         newSocket.on('init_data', (data) => {
@@ -240,6 +251,7 @@ function App() {
                     // New Props
                     isSpectator={isSpectator}
                     sessionId={sessionId}
+                    spectatorShareId={spectatorShareId}
                     onOpenSplitScreen={() => setCurrentScreen('split')}
                 />
             ) : currentScreen === 'split' ? (

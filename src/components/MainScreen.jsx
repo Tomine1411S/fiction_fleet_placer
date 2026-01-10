@@ -321,10 +321,19 @@ const MainScreen = ({ units = [], setUnits, mapImage, onSwitchScreen, onOpenSett
 
     const copyLink = (type) => {
         const url = new URL(window.location.href);
-        url.searchParams.set('session', sessionId);
+
         if (type === 'spectator') {
+            // For spectator, we use the spectatorShareId if available
+            // If we are already a spectator, our sessionId IS the spectator ID.
+            const idToShare = isSpectator ? sessionId : spectatorShareId;
+            if (idToShare) {
+                url.searchParams.set('session', idToShare);
+            }
+            // Enhance UX by setting mode param (though server enforces security via ID)
             url.searchParams.set('mode', 'spectator');
         } else {
+            // For edit link (only available if we are editor)
+            url.searchParams.set('session', sessionId);
             url.searchParams.delete('mode');
         }
         navigator.clipboard.writeText(url.toString());
@@ -924,7 +933,9 @@ const MainScreen = ({ units = [], setUnits, mapImage, onSwitchScreen, onOpenSett
                             <h3 style={{ marginTop: 0 }}>共有リンク発行</h3>
                             <p>発行するリンクのタイプを選択してください。</p>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '20px' }}>
-                                <button className="btn" onClick={() => copyLink('edit')}>編集権限あり (共有用)</button>
+                                {!isSpectator && (
+                                    <button className="btn" onClick={() => copyLink('edit')}>編集権限あり (共有用)</button>
+                                )}
                                 <button className="btn" onClick={() => copyLink('spectator')}>閲覧専用 (観戦用)</button>
                                 <button className="btn" onClick={() => setShowShareModal(false)} style={{ marginTop: '10px' }}>キャンセル</button>
                             </div>

@@ -15,46 +15,97 @@ const io = new Server(server, {
     }
 });
 
-// In-memory store: sessions[sessionId] = { units: [], lastUpdated: 0 }
+// In-memory store: sessions[sessionId] = { units: [], lastUpdated: 0, spectatorId: string }
 const sessions = {};
+// Map spectatorId -> sessionId (Edit ID)
+const spectatorMap = {};
 
 io.on('connection', (socket) => {
     console.log('User connected:', socket.id);
 
-    socket.on('join_session', (sessionId) => {
+    socket.on('join_session', (inputId) => {
+        let sessionId = inputId;
+        let isReadOnly = false;
+        let spectatorId = null;
+
+        // Check if inputId is a Spectator ID
+        if (spectatorMap[inputId]) {
+            sessionId = spectatorMap[inputId];
+            isReadOnly = true;
+            console.log(`Socket ${socket.id} joined as SPECTATOR for session ${sessionId}`);
+        } else {
+            // It's an Edit ID (or new session)
+            console.log(`Socket ${socket.id} joined as EDITOR for session ${sessionId}`);
+
+            // Create session if not exists
+            if (!sessions[sessionId]) {
+                // Generate a random spectator ID for this session
+                const newSpectatorId = Math.random().toString(36).substring(2, 15);
+                sessions[sessionId] = {
+                    units: [],
+                    mapImage: null,
+                    lastUpdated: Date.now(),
+                    spectatorId: newSpectatorId
+                };
+                spectatorMap[newSpectatorId] = sessionId;
+            }
+            spectatorId = sessions[sessionId].spectatorId;
+        }
+
         socket.join(sessionId);
-        console.log(`Socket ${socket.id} joined session ${sessionId}`);
+
+        // Store permission in socket data
+        socket.data.isReadOnly = isReadOnly;
+        socket.data.sessionId = sessionId; // Store actual session ID
+
+        // Inform client of their role and relevant IDs
+        socket.emit('session_info', {
+            role: isReadOnly ? 'spectator' : 'editor',
+            sessionId: sessionId,
+            spectatorId: isReadOnly ? inputId : spectatorId // If editor, send the spec ID to share
+        });
 
         // Send current session data if exists
         if (sessions[sessionId]) {
             socket.emit('init_data', { units: sessions[sessionId].units, mapImage: sessions[sessionId].mapImage });
-        } else {
-            // New session, init empty or wait for client to push
-            sessions[sessionId] = { units: [], mapImage: null, lastUpdated: Date.now() };
-            // Request client to send their initial data if they have it?
-            // Or assume fresh session starts empty.
-            // If client has local data they want to "upload" to this session, they should emit update immediately after join.
         }
     });
 
     socket.on('update_data', ({ sessionId, units }) => {
-        // Update server store
-        if (!sessions[sessionId]) {
-            sessions[sessionId] = { units: [], lastUpdated: 0 };
+        // Security Check
+        if (socket.data.isReadOnly) {
+            console.warn(`Socket ${socket.id} attempted update_data without permission.`);
+            return;
         }
-        sessions[sessionId].units = units;
-        sessions[sessionId].lastUpdated = Date.now();
+
+        // Use socket.data.sessionId to ensure they update the session they joined
+        const realSessionId = socket.data.sessionId || sessionId;
+
+        // Update server store
+        if (!sessions[realSessionId]) {
+            sessions[realSessionId] = { units: [], lastUpdated: 0 };
+        }
+        sessions[realSessionId].units = units;
+        sessions[realSessionId].lastUpdated = Date.now();
 
         // Broadcast to others in the room
-        socket.to(sessionId).emit('server_update', units);
+        socket.to(realSessionId).emit('server_update', units);
     });
 
     socket.on('update_map', ({ sessionId, mapImage }) => {
-        if (!sessions[sessionId]) {
-            sessions[sessionId] = { units: [], mapImage: null, lastUpdated: 0 };
+        // Security Check
+        if (socket.data.isReadOnly) {
+            console.warn(`Socket ${socket.id} attempted update_map without permission.`);
+            return;
         }
-        sessions[sessionId].mapImage = mapImage;
-        socket.to(sessionId).emit('map_update', mapImage);
+
+        const realSessionId = socket.data.sessionId || sessionId;
+
+        if (!sessions[realSessionId]) {
+            sessions[realSessionId] = { units: [], mapImage: null, lastUpdated: 0 };
+        }
+        sessions[realSessionId].mapImage = mapImage;
+        socket.to(realSessionId).emit('map_update', mapImage);
     });
 
     socket.on('disconnect', () => {
