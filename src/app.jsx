@@ -7,7 +7,7 @@ import { saveProject, loadProject, generateStatusReport } from './utils/fileSyst
 import FleetSplitScreen from './components/FleetSplitScreen';
 import { loadCSV } from './utils/csvLoader';
 import { io } from 'socket.io-client';
-import './App.css'; // スタイル定義が必要
+import './app.css'; // スタイル定義が必要
 
 function App() {
     const [currentScreen, setCurrentScreen] = useState('main'); // 'main' or 'edit'
