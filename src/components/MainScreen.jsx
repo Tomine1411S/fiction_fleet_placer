@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import Draggable from 'react-draggable';
 import { saveAs } from 'file-saver';
 
-const MainScreen = ({ units = [], setUnits, mapImage, onSwitchScreen, onOpenSettings, onOpenShipList, onFileUpload, onSaveZip, onDownloadReport, selectedUnitId, setSelectedUnitId, fleetTypes, isSpectator, sessionId, onOpenSplitScreen }) => {
+const MainScreen = ({ units = [], setUnits, mapImage, onSwitchScreen, onOpenSettings, onOpenShipList, onFileUpload, onSaveZip, onDownloadReport, selectedUnitId, setSelectedUnitId, fleetTypes, isSpectator, sessionId, spectatorShareId, onOpenSplitScreen }) => {
     // const [selectedUnitId, setSelectedUnitId] = useState(null); // Now from props
     const [hoveredUnitId, setHoveredUnitId] = useState(null);
     const [contextMenu, setContextMenu] = useState({ visible: false, x: 0, y: 0, unitId: null, isBackground: false });
