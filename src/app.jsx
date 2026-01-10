@@ -21,6 +21,7 @@ function App() {
     const [editingShipIndices, setEditingShipIndices] = useState(null); // { fleetIndex, shipIndex }
 
     // Session & Socket State
+    const [sessionId, setSessionId] = useState(null);
     const [spectatorShareId, setSpectatorShareId] = useState(null); // ID for sharing view-only access
     const [isSpectator, setIsSpectator] = useState(false);
     const [socket, setSocket] = useState(null);
