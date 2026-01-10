@@ -6,7 +6,6 @@ import ShipListScreen from './components/ShipListScreen';
 import { saveProject, loadProject, generateStatusReport } from './utils/fileSystem';
 import FleetSplitScreen from './components/FleetSplitScreen';
 import { loadCSV } from './utils/csvLoader';
-import { calculateDiff, applyDiff } from './utils/diffUtils';
 import { io } from 'socket.io-client';
 import './app.css'; // スタイル定義が必要
 
@@ -29,20 +28,11 @@ function App() {
     const [isServerSynced, setIsServerSynced] = useState(false); // New: prevent overwriting server data
     const isRemoteUpdate = useRef(false); // Ref to prevents echo loops
     const isRemoteMapUpdate = useRef(false);
-    const pendingMasterDiffs = useRef(null); // Valid until Base is loaded
 
     // Master Data State (Lifted from EditScreen)
-    // "Base" data loaded from CSV
-    const [baseShipTypes, setBaseShipTypes] = useState([]);
-    const [baseShipClasses, setBaseShipClasses] = useState([]);
-    const [baseFleetTypes, setBaseFleetTypes] = useState([]);
-
-    // Current working data (Base + Diff)
     const [shipTypes, setShipTypes] = useState([]);
     const [shipClasses, setShipClasses] = useState([]);
     const [fleetTypes, setFleetTypes] = useState([]);
-
-    const isRemoteMasterUpdate = useRef(false); // Ref to prevent echo loops for master data
 
     // --- Session Init & Socket Connection ---
     useEffect(() => {
@@ -110,31 +100,6 @@ function App() {
                         // Convert back to blob for saving consistency
                         fetch(data.mapImage).then(res => res.blob()).then(blob => setMapImageBlob(blob));
                     }
-                    if (data.masterDiffs) {
-                        // Init with server diffs
-                        isRemoteMasterUpdate.current = true;
-                        // We need to wait for Base CSV to load? 
-                        // Use useEffect dependency to apply diff when both Base and Diff exist.
-                        // For now store it in a temporary ref or state if base is not ready?
-                        // Actually, base load is fast. We can just set them here if base is empty, 
-                        // but better to rely on `useEffect` to merge Base + Diff.
-                        // Implemented: Just trigger the update logic.
-                        // Wait, we need the Base to apply diff.
-                        // Let's store the pending diff in state/ref if base is missing?
-                        // Or simple hack: Assume Base loads fast.
-                        // Better: `base*` states are empty initially. 
-                        // Let's use a function to apply pending diffs.
-
-                        // BUT `init_data` might come BEFORE base CSV load finishes.
-                        // So we should save the initial diff to a ref/state and applying it when Base is ready.
-                    }
-                }
-
-                // Handle Master Diffs (Unified logic)
-                if (data.masterDiffs) {
-                    pendingMasterDiffs.current = data.masterDiffs;
-                    // Try apply immediately if ready
-                    applyPendingDiffs();
                 }
             }
         });
@@ -154,23 +119,10 @@ function App() {
             fetch(dataUrl).then(res => res.blob()).then(blob => setMapImageBlob(blob));
         });
 
-        newSocket.on('sync_master_diff', (diffs) => {
-            console.log("Received master diff sync");
-            isRemoteMasterUpdate.current = true;
-            pendingMasterDiffs.current = diffs;
-            applyPendingDiffs();
-        });
-
         return () => {
             newSocket.disconnect();
         };
-    }, [baseShipTypes, baseShipClasses, baseFleetTypes]); // Re-bind if base changes? No, unsafe. Keep empty deps but use refs/state.
-
-    // Helper to apply diffs (needs access to base state, so defined inside component or effect)
-    // Since base state changes ONLY ONCE at startup, we can put it in a useEffect dependent on base + pending.
-
-    // ... Actually, putting `applyPendingDiffs` inside the socket effect closure captures stale `base` state (empty strings).
-    // Better to use a dedicated useEffect to watch `base*` and `pendingMasterDiffs`.
+    }, []);
 
     // --- Sync Updates to Server ---
     useEffect(() => {
@@ -213,49 +165,27 @@ function App() {
     }, [mapImageBlob, socket, sessionId, isSpectator]);
 
 
-    // --- Apply Pending Master Diffs ---
-    const applyPendingDiffs = () => {
-        if (!pendingMasterDiffs.current) return;
-        if (baseShipTypes.length === 0 && baseShipClasses.length === 0 && baseFleetTypes.length === 0) return; // Wait for base
-
-        const diffs = pendingMasterDiffs.current;
-        console.log("Applying Master Diffs:", diffs);
-
-        if (diffs.shipTypes) {
-            setShipTypes(prev => applyDiff(baseShipTypes, diffs.shipTypes, 'ship_type_index'));
-        }
-        if (diffs.shipClasses) {
-            setShipClasses(prev => applyDiff(baseShipClasses, diffs.shipClasses, 'ship_class_index'));
-        }
-        if (diffs.fleetTypes) {
-            setFleetTypes(prev => applyDiff(baseFleetTypes, diffs.fleetTypes, 'type'));
-        }
-    };
-
-    // Watch for Base Data load to apply pending diffs
-    useEffect(() => {
-        applyPendingDiffs();
-    }, [baseShipTypes, baseShipClasses, baseFleetTypes]);
-
-
-    // Load Master Data (Base CSV)
+    // Load Master Data
     useEffect(() => {
         const loadMasterData = async () => {
             try {
-                // Always load CSV as Base
-                const typesData = await loadCSV('/assets/ships/ship_class_index.csv');
-                const classesData = await loadCSV('/assets/ships/ship_type_index.csv');
-                const fleetTypesData = await loadCSV('/assets/fleets/fleet_type.csv');
+                // 1. Try LocalStorage
+                const savedConfig = localStorage.getItem('restia_fleet_config');
+                if (savedConfig) {
+                    const parsed = JSON.parse(savedConfig);
+                    if (parsed.shipTypes) setShipTypes(parsed.shipTypes);
+                    if (parsed.shipClasses) setShipClasses(parsed.shipClasses);
+                    if (parsed.fleetTypes) setFleetTypes(parsed.fleetTypes);
+                } else {
+                    // 2. Fallback to CSV
+                    const typesData = await loadCSV('/assets/ships/ship_class_index.csv');
+                    const classesData = await loadCSV('/assets/ships/ship_type_index.csv');
+                    const fleetTypesData = await loadCSV('/assets/fleets/fleet_type.csv');
 
-                setBaseShipTypes(typesData);
-                setBaseShipClasses(classesData);
-                setBaseFleetTypes(fleetTypesData);
-
-                // Init current as base (will be overwritten by diff apply if pending exists)
-                setShipTypes(typesData);
-                setShipClasses(classesData);
-                setFleetTypes(fleetTypesData);
-
+                    setShipTypes(typesData);
+                    setShipClasses(classesData);
+                    setFleetTypes(fleetTypesData);
+                }
             } catch (e) {
                 console.error("Failed to load master data", e);
             }
@@ -263,39 +193,12 @@ function App() {
         loadMasterData();
     }, []);
 
-    // --- Sync Master Data Changes to Server (Calc Diff) ---
+    // Save Master Data to LocalStorage on change
     useEffect(() => {
-        // Skip if this update came from server
-        if (isRemoteMasterUpdate.current) {
-            isRemoteMasterUpdate.current = false;
-            return;
-        }
-        if (isSpectator) return;
-        if (!socket || !sessionId) return;
-        // Wait until base is loaded to avoid false diffs (empty base vs loaded current?)
-        // actually if current is loaded but base is active...
-        if (baseShipTypes.length === 0) return;
-
-        const typesDiff = calculateDiff(baseShipTypes, shipTypes, 'ship_type_index');
-        const classesDiff = calculateDiff(baseShipClasses, shipClasses, 'ship_class_index');
-        const fleetDiff = calculateDiff(baseFleetTypes, fleetTypes, 'type');
-
-        // Only emit if there are changes? 
-        // calculateDiff returns empty arrays if no change. 
-        // We can check if any array has length > 0.
-        const hasChange = (d) => d.added.length > 0 || d.modified.length > 0 || d.deleted.length > 0;
-
-        if (hasChange(typesDiff) || hasChange(classesDiff) || hasChange(fleetDiff)) {
-            const diffs = {
-                shipTypes: typesDiff,
-                shipClasses: classesDiff,
-                fleetTypes: fleetDiff
-            };
-            socket.emit('update_master_diff', { sessionId, diffs });
-        }
-
-    }, [shipTypes, shipClasses, fleetTypes, baseShipTypes, baseShipClasses, baseFleetTypes, socket, sessionId, isSpectator]);
-
+        if (shipTypes.length === 0 && shipClasses.length === 0 && fleetTypes.length === 0) return; // Skip initial empty
+        const config = { shipTypes, shipClasses, fleetTypes };
+        localStorage.setItem('restia_fleet_config', JSON.stringify(config));
+    }, [shipTypes, shipClasses, fleetTypes]);
 
     // ファイル操作ハンドラ
     const handleFileUpload = async (e) => {
@@ -313,17 +216,6 @@ function App() {
                 if (data.mapImage) {
                     setMapImage(data.mapImage);
                     setMapImageBlob(data.mapImageBlob);
-                }
-
-                // Handle loaded master diffs
-                if (data.masterDiffs) {
-                    isRemoteMasterUpdate.current = true;
-                    pendingMasterDiffs.current = data.masterDiffs;
-                    applyPendingDiffs();
-                    // Force sync these loaded diffs to server
-                    if (!isSpectator && socket && sessionId) {
-                        socket.emit('update_master_diff', { sessionId, diffs: data.masterDiffs });
-                    }
                 }
             } catch (err) {
                 console.error("Failed to load project:", err);
@@ -355,13 +247,7 @@ function App() {
                     onFileUpload={handleFileUpload}
                     onSaveZip={async () => {
                         try {
-                            // Calculate diffs for saving
-                            const diffs = {
-                                shipTypes: calculateDiff(baseShipTypes, shipTypes, 'ship_type_index'),
-                                shipClasses: calculateDiff(baseShipClasses, shipClasses, 'ship_class_index'),
-                                fleetTypes: calculateDiff(baseFleetTypes, fleetTypes, 'type')
-                            };
-                            await saveProject({ units, mapImageBlob, mapImage, masterDiffs: diffs });
+                            await saveProject({ units, mapImageBlob });
                         } catch (e) {
                             console.error(e);
                             alert("ZIP保存に失敗しました: " + e.message);

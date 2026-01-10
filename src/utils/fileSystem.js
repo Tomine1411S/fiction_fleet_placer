@@ -245,23 +245,6 @@ export const loadProject = async (file) => {
         data.units = Array.from(mergedMap.values());
     }
 
-    // 2. Master Data Diffs
-    const diffDir = "conf/fleet_diff/";
-    const shipTypesFile = zip.file(`${diffDir}ship_types.json`);
-    const shipClassesFile = zip.file(`${diffDir}ship_classes.json`);
-    const fleetTypesFile = zip.file(`${diffDir}fleet_types.json`);
-
-    data.masterDiffs = {};
-    if (shipTypesFile) {
-        try { data.masterDiffs.shipTypes = JSON.parse(await shipTypesFile.async("string")); } catch (e) { console.error(e); }
-    }
-    if (shipClassesFile) {
-        try { data.masterDiffs.shipClasses = JSON.parse(await shipClassesFile.async("string")); } catch (e) { console.error(e); }
-    }
-    if (fleetTypesFile) {
-        try { data.masterDiffs.fleetTypes = JSON.parse(await fleetTypesFile.async("string")); } catch (e) { console.error(e); }
-    }
-
     return data;
 };
 
@@ -331,24 +314,11 @@ export const saveProject = async (state) => {
                 }
             });
 
-            // ... (existing code) ...
+            // 下位互換性のため、もし旧ローダーがトップレベルを見るなら...
+            // 今回は構造変更するが、旧アプリで開けなくなる可能性がある。
             // 指示には特にないため、新構造のみ出力する。
         }
     });
-
-    // 3. Master Data Diffs
-    if (state.masterDiffs) {
-        const diffDir = zip.folder("conf/fleet_diff");
-        if (state.masterDiffs.shipTypes) {
-            diffDir.file("ship_types.json", JSON.stringify(state.masterDiffs.shipTypes, null, 2));
-        }
-        if (state.masterDiffs.shipClasses) {
-            diffDir.file("ship_classes.json", JSON.stringify(state.masterDiffs.shipClasses, null, 2));
-        }
-        if (state.masterDiffs.fleetTypes) {
-            diffDir.file("fleet_types.json", JSON.stringify(state.masterDiffs.fleetTypes, null, 2));
-        }
-    }
 
     const content = await zip.generateAsync({ type: "blob" });
     saveAs(content, "deployment.zip");

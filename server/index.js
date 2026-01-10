@@ -45,8 +45,7 @@ io.on('connection', (socket) => {
                     units: [],
                     mapImage: null,
                     lastUpdated: Date.now(),
-                    spectatorId: newSpectatorId,
-                    masterDiffs: { shipTypes: null, shipClasses: null, fleetTypes: null } // Init Diffs
+                    spectatorId: newSpectatorId
                 };
                 spectatorMap[newSpectatorId] = sessionId;
             }
@@ -68,33 +67,11 @@ io.on('connection', (socket) => {
 
         // Send current session data if exists, ELSE send empty init to trigger sync
         if (sessions[sessionId]) {
-            socket.emit('init_data', {
-                units: sessions[sessionId].units,
-                mapImage: sessions[sessionId].mapImage,
-                masterDiffs: sessions[sessionId].masterDiffs || null
-            });
+            socket.emit('init_data', { units: sessions[sessionId].units, mapImage: sessions[sessionId].mapImage });
         } else {
             // New session needs explicit empty init to unlock client
-            socket.emit('init_data', { units: [], mapImage: null, masterDiffs: null });
+            socket.emit('init_data', { units: [], mapImage: null });
         }
-    });
-
-    // --- Master Data Sync ---
-    socket.on('update_master_diff', ({ sessionId, diffs }) => {
-        // Security Check
-        if (socket.data.isReadOnly) return;
-
-        const realSessionId = socket.data.sessionId || sessionId;
-
-        if (!sessions[realSessionId]) return;
-
-        // Merge or Replace logic?
-        // Ideally we just replace the diffs because the client is sending the aggregate diff from Base to Current.
-        // The client is authoritative on "what the current configuration is relative to base".
-        sessions[realSessionId].masterDiffs = diffs;
-
-        // Broadcast to others
-        socket.to(realSessionId).emit('sync_master_diff', diffs);
     });
 
     socket.on('update_data', ({ sessionId, units }) => {
