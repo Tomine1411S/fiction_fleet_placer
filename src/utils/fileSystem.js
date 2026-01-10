@@ -149,6 +149,14 @@ export const loadProject = async (file) => {
                         name: info['Name'] || ''
                     });
                 }
+
+                // Load Fleet Image
+                const imgFile = zip.file(`image/pin${pinIdStr}/fleet${fleetIdStr}.png`);
+                if (imgFile) {
+                    const b64 = await imgFile.async("base64");
+                    fleet.symbolImage = `data:image/png;base64,${b64}`;
+                }
+
                 pin.fleets.push(fleet);
             }
             data.units.push(pin);
