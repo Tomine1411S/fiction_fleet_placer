@@ -207,26 +207,33 @@ sudo systemctl enable --now httpd
     # 事前に: sudo cp -r /path/to/project/dist/* /var/www/html/fiction-fleet/
     DocumentRoot /var/www/html/fiction-fleet
 
+    # WebSocket (Socket.io) プロキシ設定
+    # 順序が重要です: 具体的なパス(/socket.io/)のルールを先に記述し、
+    # 静的ファイルのルールと競合しないようにします。
+
+    # 1. WebSocket Upgradeのハンドリング (ws://)
+    RewriteEngine On
+    RewriteCond %{HTTP:Upgrade} =websocket [NC]
+    RewriteRule ^/socket.io/(.*) ws://localhost:3001/socket.io/$1 [P,L]
+
+    # 2. Polling (http://) のハンドリング
+    # ProxyPassを使用することで、RewriteRuleよりもシンプルかつ確実に転送します
+    ProxyPass /socket.io/ http://localhost:3001/socket.io/
+    ProxyPassReverse /socket.io/ http://localhost:3001/socket.io/
+
+    # 3. 静的ファイル (Frontend)
+    # DocumentRootにファイルが存在すればそれを返し、なければindex.html (SPA)
     <Directory /var/www/html/fiction-fleet>
         Options Indexes FollowSymLinks
         AllowOverride All
         Require all granted
-        # SPAルーティング対応 (React Router)
+        
         RewriteEngine On
+        # ファイル・ディレクトリが存在しない場合のみindex.htmlへ
         RewriteCond %{REQUEST_FILENAME} !-f
+        RewriteCond %{REQUEST_FILENAME} !-d
         RewriteRule ^ index.html [QSA,L]
     </Directory>
-
-    # WebSocket (Socket.io) プロキシ設定
-    # Upgradeヘッダーを適切に処理するために必要です
-    RewriteEngine On
-    RewriteCond %{HTTP:Upgrade} =websocket [NC]
-    RewriteRule /(.*)           ws://localhost:3001/$1 [P,L]
-    RewriteCond %{HTTP:Upgrade} !=websocket [NC]
-    RewriteRule /(.*)           http://localhost:3001/$1 [P,L]
-
-    # プロキシヘッダー設定
-    ProxyPassReverse / http://localhost:3001/
 </VirtualHost>
 ```
 
