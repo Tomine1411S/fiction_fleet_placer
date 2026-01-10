@@ -361,7 +361,7 @@ function App() {
                                 shipClasses: calculateDiff(baseShipClasses, shipClasses, 'ship_class_index'),
                                 fleetTypes: calculateDiff(baseFleetTypes, fleetTypes, 'type')
                             };
-                            await saveProject({ units, mapImageBlob, masterDiffs: diffs });
+                            await saveProject({ units, mapImageBlob, mapImage, masterDiffs: diffs });
                         } catch (e) {
                             console.error(e);
                             alert("ZIP保存に失敗しました: " + e.message);
