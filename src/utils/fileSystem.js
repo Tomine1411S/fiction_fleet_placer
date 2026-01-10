@@ -271,6 +271,15 @@ export const saveProject = async (state) => {
     // 1. マップ画像
     if (state.mapImageBlob) {
         zip.file("maps/map_bg.png", state.mapImageBlob);
+    } else if (state.mapImage) {
+        // Fallback: Try to fetch the mapImage (DataURL or BlobURL)
+        try {
+            const res = await fetch(state.mapImage);
+            const blob = await res.blob();
+            zip.file("maps/map_bg.png", blob);
+        } catch (e) {
+            console.warn("Failed to fetch map image for saving:", e);
+        }
     }
 
     // 2. ピン情報
