@@ -751,7 +751,7 @@ const MainScreen = ({ units = [], setUnits, mapImage, onSwitchScreen, onOpenSett
                                     onMouseLeave={() => setHoveredUnitId(null)}
                                     style={{
                                         position: 'absolute', cursor: 'grab',
-                                        zIndex: 100, // Foreground
+                                        zIndex: (selectedUnitId === unit.id || hoveredUnitId === unit.id) ? 200 : 100, // Pop to front if active
                                         pointerEvents: (activeUnit && activeUnit.type === 'line' && activeUnit.id !== unit.id) ? 'none' : 'auto',
                                         opacity: (activeUnit && activeUnit.type === 'line' && activeUnit.id !== unit.id) ? 0.5 : 1 // Visual cue
                                     }}
