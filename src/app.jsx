@@ -52,7 +52,11 @@ function App() {
         setSessionId(sId);
 
         // Connect to Server
-        const socketUrl = window.location.hostname === 'localhost' ? 'http://localhost:3001' : `http://${window.location.hostname}:3001`;
+        // Connect to Server
+        // Local dev: port 3001
+        // Production (behind proxy): relative path (auto-detects domain/port)
+        const isLocal = window.location.hostname === 'localhost';
+        const socketUrl = isLocal ? 'http://localhost:3001' : '/';
 
         console.log("Connecting to socket:", socketUrl);
         const newSocket = io(socketUrl);

@@ -21,7 +21,7 @@
 
 # 本番環境構築・インストール
 
-詳細な手順（Ubuntu/CentOS別のセットアップ方法など）は [INSTALL.md](./INSTALL.md) を参照してください。
+詳細な手順（Ubuntu/CentOS別のセットアップ方法、ApacheによるHTTPS化など）は [INSTALL.md](./INSTALL.md) を参照してください。
 
 ## 簡易手順
 1. リポジトリのクローン
@@ -37,6 +37,7 @@
    node index.js
    ```
 4. フロントエンド(`dist`フォルダ)の配信
+   - Apache / Nginx などのWebサーバーでの配信を推奨します。
 
 ※ サーバーはポート `3001` でバックエンドAPI待ち受け、フロントエンドは任意のWebサーバーで配信可能です。
 

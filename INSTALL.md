@@ -151,3 +151,105 @@ serve -s dist -p 3000
 ```
 
 ポート設定などの詳細は `server/index.js` および `vite.config.js` を確認してください。
+
+---
+
+## 4. 本番環境構築 (HTTPS / Port 443)
+
+ポート443 (HTTPS) で運用する場合、**Webサーバー (Apache2)** をリバースプロキシとして使用する構成を推奨します。
+
+### 構成概要
+- **Apache2**: SSL終端 (HTTPS)、静的ファイル(`/`)配信、WebSocket(`/socket.io/`)転送
+- **Node.js**: ポート3001でバックエンドAPIを稼働
+
+### Apache2 セットアップ手順
+
+#### 1. Apache2 と必要モジュールのインストール
+
+##### Ubuntu
+```bash
+sudo apt update
+sudo apt install -y apache2
+sudo a2enmod proxy proxy_http proxy_wstunnel rewrite ssl headers
+sudo systemctl restart apache2
+```
+
+##### CentOS / RHEL
+```bash
+sudo dnf install -y httpd mod_ssl
+# CentOSではデフォルトでproxyモジュール等はロードされますが、confを確認してください
+sudo systemctl enable --now httpd
+```
+
+#### 2. Apache VirtualHost 設定
+
+`/etc/apache2/sites-available/fiction-fleet.conf` (Ubuntu) または `/etc/httpd/conf.d/fiction-fleet.conf` (CentOS) を作成します。
+
+**設定例:**
+※ `your-domain.com` および証明書パスは環境に合わせて変更してください。
+
+```apache
+<VirtualHost *:80>
+    ServerName your-domain.com
+    # HTTPSへリダイレクト
+    Redirect permanent / https://your-domain.com/
+</VirtualHost>
+
+<VirtualHost *:443>
+    ServerName your-domain.com
+
+    # SSL設定 (例: Let's Encrypt 等)
+    SSLEngine on
+    SSLCertificateFile /etc/ssl/certs/your-cert.pem
+    SSLCertificateKeyFile /etc/ssl/private/your-key.pem
+
+    # ドキュメントルート (フロントエンドのビルド成果物)
+    # 事前に: sudo cp -r /path/to/project/dist/* /var/www/html/fiction-fleet/
+    DocumentRoot /var/www/html/fiction-fleet
+
+    <Directory /var/www/html/fiction-fleet>
+        Options Indexes FollowSymLinks
+        AllowOverride All
+        Require all granted
+        # SPAルーティング対応 (React Router)
+        RewriteEngine On
+        RewriteCond %{REQUEST_FILENAME} !-f
+        RewriteRule ^ index.html [QSA,L]
+    </Directory>
+
+    # WebSocket (Socket.io) プロキシ設定
+    # Upgradeヘッダーを適切に処理するために必要です
+    RewriteEngine On
+    RewriteCond %{HTTP:Upgrade} =websocket [NC]
+    RewriteRule /(.*)           ws://localhost:3001/$1 [P,L]
+    RewriteCond %{HTTP:Upgrade} !=websocket [NC]
+    RewriteRule /(.*)           http://localhost:3001/$1 [P,L]
+
+    # プロキシヘッダー設定
+    ProxyPassReverse / http://localhost:3001/
+</VirtualHost>
+```
+
+#### 3. 設定の反映
+
+```bash
+# Ubuntu
+sudo a2ensite fiction-fleet
+sudo systemctl reload apache2
+
+# CentOS
+sudo systemctl restart httpd
+```
+
+#### 4. バックエンドの起動
+
+バックエンドサーバーはローカル(3001)で起動しておきます。
+
+```bash
+cd server
+npm install
+# PM2などでの永続化推奨
+pm2 start index.js --name "fleet-server"
+```
+
+これにより、ブラウザで `https://your-domain.com` にアクセスすると、Apache経由でフロントエンドが表示され、`/socket.io/` 通信も安全にバックエンドへ転送されます。
