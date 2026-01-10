@@ -26,8 +26,8 @@ export const loadProject = async (file) => {
     // 1. 新しい構造 (fleet/pinN/) の読み込みを試行
     const pinFolders = new Set();
     zip.forEach((relativePath, zipEntry) => {
-        const match = relativePath.match(/^fleet\/pin(\d+)\/$/);
-        if (match && zipEntry.dir) {
+        const match = relativePath.match(/^fleet\/pin(\d+)\/pin_info\.txt$/);
+        if (match) {
             pinFolders.add(match[1]);
         }
     });
@@ -95,8 +95,8 @@ export const loadProject = async (file) => {
             // fleet/pinN/fleetM/
             const fleetFolders = [];
             zip.forEach((relativePath, zipEntry) => {
-                if (relativePath.startsWith(pinDir) && zipEntry.dir) {
-                    const match = relativePath.match(new RegExp(`^${pinDir}fleet(\\d+)\/$`));
+                if (relativePath.startsWith(pinDir)) {
+                    const match = relativePath.match(new RegExp(`^${pinDir}fleet(\\d+)\/fleet_index\.txt$`));
                     if (match) fleetFolders.push(match[1]);
                 }
             });
