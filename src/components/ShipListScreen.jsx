@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { saveAs } from 'file-saver';
 
-const ShipListScreen = ({ units, shipTypes, shipClasses, onSwitchScreen, onSelectUnit }) => {
+const ShipListScreen = ({ units, setUnits, shipTypes, shipClasses, onSwitchScreen, onSelectUnit, isSpectator }) => {
 
     // 1. Flatten all ships from units -> fleets -> ships
     const allShips = useMemo(() => {
@@ -74,7 +74,77 @@ const ShipListScreen = ({ units, shipTypes, shipClasses, onSwitchScreen, onSelec
         return duplicates;
     };
 
-    // 4. CSV Download
+    // 4. Random Numbering Logic
+    const handleRandomNumbering = (shipsInClass) => {
+        if (!setUnits) return;
+
+        // Separate numbered and unnumbered
+        const numberedShips = shipsInClass.filter(s => s.number && s.number.trim() !== "");
+        const unnumberedShips = shipsInClass.filter(s => !s.number || s.number.trim() === "");
+
+        if (unnumberedShips.length === 0) return;
+
+        // 1. Determine Range
+        const existingNumbers = numberedShips.map(s => parseInt(s.number)).filter(n => !isNaN(n));
+        const maxExisting = existingNumbers.length > 0 ? Math.max(...existingNumbers) : 0;
+        const needed = unnumberedShips.length;
+
+        let maxLimit;
+        if (needed === 1) {
+            maxLimit = maxExisting + 1;
+        } else {
+            const buffer = Math.ceil(needed * 0.3);
+            maxLimit = maxExisting + needed + buffer;
+        }
+
+        // 2. Create Candidate List
+        const candidates = [];
+        const existingSet = new Set(existingNumbers);
+        for (let i = 1; i <= maxLimit; i++) {
+            if (!existingSet.has(i)) {
+                candidates.push(i);
+            }
+        }
+
+        // 3. Sort Unnumbered Ships (unitId -> fleetIndex -> shipIndex)
+        // Note: allShips generation order naturally follows this, but ensuring sort is safer
+        unnumberedShips.sort((a, b) => {
+            if (a.unitId !== b.unitId) return a.unitId - b.unitId;
+            if (a.fleetIndex !== b.fleetIndex) return a.fleetIndex - b.fleetIndex;
+            return a.shipIndex - b.shipIndex;
+        });
+
+        // 4. Assign Random Numbers
+        // We will assign to a cloned units structure
+        // Since units is state, we need deep copy or map
+        // To be efficient, we can serialize/deserialize or map
+        const newUnits = JSON.parse(JSON.stringify(units));
+
+        unnumberedShips.forEach(target => {
+            if (candidates.length === 0) return; // Should not happen with current math
+            // Pick random index
+            const randIdx = Math.floor(Math.random() * candidates.length);
+            const assignedNum = candidates[randIdx];
+
+            // Remove from candidates
+            candidates.splice(randIdx, 1);
+
+            // Update in newUnits
+            // newUnits is an array of pins.
+            const unit = newUnits.find(u => u.id === target.unitId);
+            if (unit && unit.fleets && unit.fleets[target.fleetIndex]) {
+                const fleet = unit.fleets[target.fleetIndex];
+                if (fleet.ships && fleet.ships[target.shipIndex]) {
+                    fleet.ships[target.shipIndex].number = assignedNum.toString();
+                }
+            }
+        });
+
+        setUnits(newUnits);
+    };
+
+
+    // 5. CSV Download
     const handleDownloadCSV = () => {
         let csv = "Type,Class,Number,Name,FleetCode,FleetName,DuplicateWarning\n";
 
@@ -122,6 +192,9 @@ const ShipListScreen = ({ units, shipTypes, shipClasses, onSwitchScreen, onSelec
                     const typeName = shipTypes.find(t => t.ship_type_index === tCode)?.name_of_type || tCode;
                     const className = shipClasses.find(c => c.ship_class_index === cCode && c.ship_type_index === tCode)?.ship_class_name || cCode;
 
+                    // Unnumbered count
+                    const unnumberedCount = ships.filter(s => !s.number || s.number.trim() === "").length;
+
                     // Sort ships by number
                     const sortedShips = [...ships].sort((a, b) => (parseInt(a.number) || 0) - (parseInt(b.number) || 0));
 
@@ -133,6 +206,17 @@ const ShipListScreen = ({ units, shipTypes, shipClasses, onSwitchScreen, onSelec
                                     <span>- {className}</span>
                                 </h3>
                                 <div style={{ fontSize: '0.9em', color: '#666', marginTop: '4px' }}>Code: {cCode} / {ships.length}隻</div>
+
+                                {!isSpectator && (
+                                    <button
+                                        className="btn-small"
+                                        style={{ marginTop: '8px', width: '100%', padding: '4px', fontSize: '0.9em', cursor: unnumberedCount === 0 ? 'not-allowed' : 'pointer', opacity: unnumberedCount === 0 ? 0.6 : 1 }}
+                                        onClick={() => handleRandomNumbering(ships)}
+                                        disabled={unnumberedCount === 0}
+                                    >
+                                        ランダム付番 ({unnumberedCount}隻)
+                                    </button>
+                                )}
                             </div>
 
                             <div style={{ overflowY: 'auto', flex: 1, padding: '0 10px 10px' }}>

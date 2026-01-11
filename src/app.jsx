@@ -348,6 +348,7 @@ function App() {
             ) : (
                 <ShipListScreen
                     units={units}
+                    setUnits={setUnits}
                     shipTypes={shipTypes}
                     shipClasses={shipClasses}
                     onSwitchScreen={() => setCurrentScreen('main')}
