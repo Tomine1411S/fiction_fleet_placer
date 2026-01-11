@@ -106,6 +106,11 @@ function App() {
                         // Convert back to blob for saving consistency
                         fetch(data.mapImage).then(res => res.blob()).then(blob => setMapImageBlob(blob));
                     }
+                    if (data.overrides) {
+                        if (data.overrides.shipTypes) setShipTypes(data.overrides.shipTypes);
+                        if (data.overrides.shipClasses) setShipClasses(data.overrides.shipClasses);
+                        if (data.overrides.fleetTypes) setFleetTypes(data.overrides.fleetTypes);
+                    }
                 }
             }
         });
@@ -123,6 +128,18 @@ function App() {
             isRemoteMapUpdate.current = true;
             setMapImage(dataUrl);
             fetch(dataUrl).then(res => res.blob()).then(blob => setMapImageBlob(blob));
+        });
+
+        newSocket.on('config_update', (overrides) => {
+            console.log("Received config update");
+            if (overrides) {
+                if (overrides.shipTypes) setShipTypes(overrides.shipTypes);
+                if (overrides.shipClasses) setShipClasses(overrides.shipClasses);
+                if (overrides.fleetTypes) setFleetTypes(overrides.fleetTypes);
+                // Optional: visual indicator or toast instead of alert causing interruption
+                // alert("設定ファイル(config)が同期されました。"); 
+                console.log("Config synced from server");
+            }
         });
 
         return () => {
@@ -234,6 +251,11 @@ function App() {
                     if (data.overrides.shipClasses) setShipClasses(data.overrides.shipClasses);
                     if (data.overrides.fleetTypes) setFleetTypes(data.overrides.fleetTypes);
                     alert("設定ファイル(config)による上書き設定を適用しました。");
+
+                    // Emit to server
+                    if (socket && sessionId && !isSpectator) {
+                        socket.emit('update_config', { sessionId, overrides: data.overrides });
+                    }
                 }
             } catch (err) {
                 console.error("Failed to load project:", err);

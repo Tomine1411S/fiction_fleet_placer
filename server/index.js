@@ -44,6 +44,7 @@ io.on('connection', (socket) => {
                 sessions[sessionId] = {
                     units: [],
                     mapImage: null,
+                    overrides: {}, // Config overrides (shipTypes, etc.)
                     lastUpdated: Date.now(),
                     spectatorId: newSpectatorId
                 };
@@ -67,10 +68,14 @@ io.on('connection', (socket) => {
 
         // Send current session data if exists, ELSE send empty init to trigger sync
         if (sessions[sessionId]) {
-            socket.emit('init_data', { units: sessions[sessionId].units, mapImage: sessions[sessionId].mapImage });
+            socket.emit('init_data', {
+                units: sessions[sessionId].units,
+                mapImage: sessions[sessionId].mapImage,
+                overrides: sessions[sessionId].overrides
+            });
         } else {
             // New session needs explicit empty init to unlock client
-            socket.emit('init_data', { units: [], mapImage: null });
+            socket.emit('init_data', { units: [], mapImage: null, overrides: {} });
         }
     });
 
@@ -109,6 +114,23 @@ io.on('connection', (socket) => {
         }
         sessions[realSessionId].mapImage = mapImage;
         socket.to(realSessionId).emit('map_update', mapImage);
+    });
+
+    socket.on('update_config', ({ sessionId, overrides }) => {
+        // Security Check
+        if (socket.data.isReadOnly) {
+            console.warn(`Socket ${socket.id} attempted update_config without permission.`);
+            return;
+        }
+
+        const realSessionId = socket.data.sessionId || sessionId;
+
+        if (!sessions[realSessionId]) {
+            sessions[realSessionId] = { units: [], mapImage: null, overrides: {}, lastUpdated: 0 };
+        }
+        sessions[realSessionId].overrides = overrides;
+        console.log(`Session ${realSessionId} config updated`);
+        socket.to(realSessionId).emit('config_update', overrides);
     });
 
     socket.on('disconnect', () => {
