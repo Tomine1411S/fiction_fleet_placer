@@ -15,7 +15,33 @@ function App() {
     const [mapImageBlob, setMapImageBlob] = useState(null); // 保存用Blob
 
     // 部隊データ（ステートの核）
-    const [units, setUnits] = useState([]);
+    // const [units, setUnits] = useState([]); // Removed in favor of layers
+    const [layers, setLayers] = useState([
+        { id: 1, name: 'Layer 1', visible: true, units: [], mapImage: null, mapImageBlob: null }
+    ]);
+    const [activeLayerId, setActiveLayerId] = useState(1);
+
+    // Derived State for backward compatibility / child props
+    const activeLayer = layers.find(l => l.id === activeLayerId) || layers[0];
+    const units = activeLayer.units;
+    const setUnits = (newUnits) => {
+        setLayers(prev => prev.map(l => l.id === activeLayerId ? { ...l, units: newUnits } : l));
+    };
+
+    // Effective Map Image Logic (Shared)
+    const currentMapImage = React.useMemo(() => {
+        const sorted = [...layers].sort((a, b) => a.id - b.id);
+        const activeIndex = sorted.findIndex(l => l.id === activeLayerId);
+        if (activeIndex === -1) return null;
+
+        for (let i = activeIndex; i >= 0; i--) {
+            if (sorted[i].visible && sorted[i].mapImage) return sorted[i].mapImage;
+        }
+        return null; // Fallback to null (no image)
+    }, [layers, activeLayerId]);
+
+    // Fallback logic for map background (used in App for shared state if needed, but mainly for MainScreen)
+    // We don't expose a single 'mapImage' state anymore, MainScreen picks it up.
 
     const [selectedUnitId, setSelectedUnitId] = useState(null);
     const [editingShipIndices, setEditingShipIndices] = useState(null); // { fleetIndex, shipIndex }
@@ -40,6 +66,9 @@ function App() {
     const [shipClasses, setShipClasses] = useState([]);
     const [fleetTypes, setFleetTypes] = useState([]);
 
+    // App Settings
+    const [appSettings, setAppSettings] = useState({ showFleetNameOnHover: true });
+
     // --- Session Init & Socket Connection ---
     useEffect(() => {
         // Parse URL params
@@ -60,7 +89,6 @@ function App() {
         setSessionId(sId);
 
         // Connect to Server
-        // Connect to Server
         // Local dev: port 3001 (same hostname to support LAN access)
         // Production (behind proxy): relative path (auto-detects domain/port)
         const isDev = import.meta.env.DEV;
@@ -79,9 +107,6 @@ function App() {
         newSocket.on('session_info', (info) => {
             console.log("Session Info:", info);
             setIsSpectator(info.role === 'spectator');
-            // Store spectator ID for sharing. 
-            // If editor, info.spectatorId is the view-only ID.
-            // If spectator, info.spectatorId is the same ID they used (view-only).
             setSpectatorShareId(info.spectatorId);
         });
 
@@ -91,21 +116,23 @@ function App() {
 
             if (data) {
                 if (Array.isArray(data)) {
-                    // Legacy (units only)
+                    // Legacy (units only) -> Layer 1
                     isRemoteUpdate.current = true;
-                    setUnits(data);
+                    setLayers([{ id: 1, name: 'Layer 1', visible: true, units: data, mapImage: null }]);
+                } else if (data.layers) {
+                    // New Layered Data
+                    isRemoteUpdate.current = true;
+                    setLayers(data.layers);
+                    if (data.activeLayerId) setActiveLayerId(data.activeLayerId);
                 } else {
-                    // Object { units, mapImage }
-                    if (data.units) {
-                        isRemoteUpdate.current = true;
-                        setUnits(data.units);
-                    }
-                    if (data.mapImage) {
-                        isRemoteMapUpdate.current = true;
-                        setMapImage(data.mapImage);
-                        // Convert back to blob for saving consistency
-                        fetch(data.mapImage).then(res => res.blob()).then(blob => setMapImageBlob(blob));
-                    }
+                    // Object { units, mapImage } -> Layer 1
+                    isRemoteUpdate.current = true;
+                    setLayers([{
+                        id: 1, name: 'Layer 1', visible: true,
+                        units: data.units || [],
+                        mapImage: data.mapImage || null
+                    }]);
+
                     if (data.overrides) {
                         if (data.overrides.shipTypes) setShipTypes(data.overrides.shipTypes);
                         if (data.overrides.shipClasses) setShipClasses(data.overrides.shipClasses);
@@ -117,17 +144,26 @@ function App() {
 
         newSocket.on('server_update', (data) => {
             console.log("Received server update");
-            if (data && Array.isArray(data)) {
-                isRemoteUpdate.current = true;
-                setUnits(data);
+            isRemoteUpdate.current = true;
+            if (data.layers) {
+                setLayers(data.layers);
+            } else if (Array.isArray(data)) {
+                // Fallback legacy support
+                setLayers(prev => {
+                    const l1 = prev.find(l => l.id === 1) || { id: 1, name: 'Layer 1', visible: true };
+                    return [{ ...l1, units: data }, ...prev.filter(l => l.id !== 1)];
+                });
             }
         });
 
-        newSocket.on('map_update', (dataUrl) => {
-            console.log("Received map update");
-            isRemoteMapUpdate.current = true;
-            setMapImage(dataUrl);
-            fetch(dataUrl).then(res => res.blob()).then(blob => setMapImageBlob(blob));
+        // Map update is layer specific now, but if we receive legacy map_update?
+        // Assuming socket protocol update: 'layer_map_update' or 'map_update' updates active layer?
+        // For simplicity, let's assume 'map_update' updates Layer 1 or Active Layer if legacy
+        newSocket.on('map_update', (data) => {
+            // To be refined: data needs to include layerId or we assume Layer 1
+            console.log("Received map update (Legacy/Global)");
+            // Legacy support: update Layer 1
+            setLayers(prev => prev.map(l => l.id === 1 ? { ...l, mapImage: data } : l));
         });
 
         newSocket.on('config_update', (overrides) => {
@@ -136,8 +172,6 @@ function App() {
                 if (overrides.shipTypes) setShipTypes(overrides.shipTypes);
                 if (overrides.shipClasses) setShipClasses(overrides.shipClasses);
                 if (overrides.fleetTypes) setFleetTypes(overrides.fleetTypes);
-                // Optional: visual indicator or toast instead of alert causing interruption
-                // alert("設定ファイル(config)が同期されました。"); 
                 console.log("Config synced from server");
             }
         });
@@ -150,42 +184,31 @@ function App() {
     // --- Sync Updates to Server ---
     useEffect(() => {
         if (!socket || !sessionId) return;
-
-        // Prevent overwriting server data with initial empty state
         if (!isServerSynced) return;
-
-        // If this change came from the server (isRemoteUpdate), don't echo it back.
         if (isRemoteUpdate.current) {
             isRemoteUpdate.current = false;
             return;
         }
-
-        // If spectator, never emit updates
         if (isSpectator) return;
 
-        // Emit local change
-        socket.emit('update_data', { sessionId, units });
-    }, [units, socket, sessionId, isSpectator]);
+        // Emit local change (Send all layers)
+        socket.emit('update_data', { sessionId, layers });
+    }, [layers, socket, sessionId, isSpectator]);
 
-    // --- Sync Map to Server ---
+    // --- Sync Map to Server (Legacy/Layer 1 assumption for now or disable?) ---
+    // With layers, map data is inside layer. We should sync via update_data probably,
+    // or if map is heavy, separate event. For now, let's keep separate event for active layer?
+    // Complexity: Layer images are heavy. Sending all in update_data is bad.
+    // Ideally: 'update_layer_map' { layerId, mapImage }
+    // For now, let's skip automatic map sync until backend supports layer map.
+    // OR: Sync Layer 1 map as global map for legacy compat.
     useEffect(() => {
         if (!socket || !sessionId) return;
-        if (isRemoteMapUpdate.current) {
-            isRemoteMapUpdate.current = false;
-            return;
-        }
-        if (isSpectator) return;
-
-        if (mapImageBlob) {
-            const reader = new FileReader();
-            reader.onloadend = () => {
-                if (reader.result) {
-                    socket.emit('update_map', { sessionId, mapImage: reader.result });
-                }
-            };
-            reader.readAsDataURL(mapImageBlob);
-        }
-    }, [mapImageBlob, socket, sessionId, isSpectator]);
+        /* Legacy Map Sync Logic - Disabled for new Layer System for now, 
+           or needs refactoring to sync specific layer images.
+           Assuming update_data carries URLs, and binary blobs are handled via upload. 
+        */
+    }, [isSpectator]);
 
 
     // Load Master Data
@@ -213,6 +236,12 @@ function App() {
                     setShipClasses(classesData);
                     setFleetTypes(fleetTypesData);
                 }
+
+                // Load App Settings
+                const savedSettings = localStorage.getItem('restia_app_settings');
+                if (savedSettings) {
+                    setAppSettings(JSON.parse(savedSettings));
+                }
             } catch (e) {
                 console.error("Failed to load master data", e);
             }
@@ -227,6 +256,10 @@ function App() {
         localStorage.setItem('restia_fleet_config', JSON.stringify(config));
     }, [shipTypes, shipClasses, fleetTypes]);
 
+    useEffect(() => {
+        localStorage.setItem('restia_app_settings', JSON.stringify(appSettings));
+    }, [appSettings]);
+
     // ファイル操作ハンドラ
     const handleFileUpload = async (e) => {
         if (isSpectator) return; // Disable for spectator
@@ -235,14 +268,19 @@ function App() {
         if (file.name.endsWith('.zip')) {
             try {
                 const data = await loadProject(file);
-                // Updates here will trigger useEffect -> emit sync
-                // Since we are loading a file, we are authoritative, so we can consider ourselves synced (ready to push)
                 setIsServerSynced(true);
 
-                setUnits(data.units || []);
-                if (data.mapImage) {
-                    setMapImage(data.mapImage);
-                    setMapImageBlob(data.mapImageBlob);
+                if (data.layers) {
+                    setLayers(data.layers);
+                    setActiveLayerId(data.activeLayerId || 1);
+                } else {
+                    // Legacy load
+                    setLayers([{
+                        id: 1, name: 'Layer 1', visible: true,
+                        units: data.units || [],
+                        mapImage: data.mapImage,
+                        mapImageBlob: data.mapImageBlob
+                    }]);
                 }
 
                 // Apply Config Overrides
@@ -250,9 +288,17 @@ function App() {
                     if (data.overrides.shipTypes) setShipTypes(data.overrides.shipTypes);
                     if (data.overrides.shipClasses) setShipClasses(data.overrides.shipClasses);
                     if (data.overrides.fleetTypes) setFleetTypes(data.overrides.fleetTypes);
+
+                    // App Settings Override or Default
+                    if (data.overrides.appSettings) {
+                        setAppSettings(data.overrides.appSettings);
+                    } else {
+                        // Default if missing in ZIP
+                        setAppSettings({ showFleetNameOnHover: true });
+                    }
+
                     alert("設定ファイル(config)による上書き設定を適用しました。");
 
-                    // Emit to server
                     if (socket && sessionId && !isSpectator) {
                         socket.emit('update_config', { sessionId, overrides: data.overrides });
                     }
@@ -262,8 +308,11 @@ function App() {
                 alert("プロジェクトの読み込みに失敗しました");
             }
         } else if (file.type.startsWith('image/')) {
-            setMapImage(URL.createObjectURL(file));
-            setMapImageBlob(file);
+            // Updated behavior: Ask layer? or default to active.
+            // MainScreen will handle specific uploads, but this is global handler.
+            // Let's assume this updates Active Layer.
+            const url = URL.createObjectURL(file);
+            setLayers(prev => prev.map(l => l.id === activeLayerId ? { ...l, mapImage: url, mapImageBlob: file } : l));
         }
     };
 
@@ -278,9 +327,15 @@ function App() {
 
             {currentScreen === 'main' ? (
                 <MainScreen
+                    layers={layers}
+                    setLayers={setLayers}
+                    activeLayerId={activeLayerId}
+                    setActiveLayerId={setActiveLayerId}
+                    // Legacy Props Compatibility
                     units={units}
                     setUnits={setUnits}
-                    mapImage={mapImage}
+                    mapImage={currentMapImage}
+
                     onSwitchScreen={() => setCurrentScreen('edit')}
                     onOpenSettings={() => setCurrentScreen('settings')}
                     onOpenShipList={() => setCurrentScreen('shipList')}
@@ -288,14 +343,15 @@ function App() {
                     onSaveZip={async () => {
                         try {
                             const overrides = {};
-                            // Helper to check for equality
                             const hasChanged = (base, current) => JSON.stringify(base) !== JSON.stringify(current);
+
 
                             if (hasChanged(baseShipTypes, shipTypes)) overrides.shipTypes = shipTypes;
                             if (hasChanged(baseShipClasses, shipClasses)) overrides.shipClasses = shipClasses;
                             if (hasChanged(baseFleetTypes, fleetTypes)) overrides.fleetTypes = fleetTypes;
+                            overrides.appSettings = appSettings; // Always save settings
 
-                            await saveProject({ units, mapImageBlob, mapImage, overrides });
+                            await saveProject({ layers, activeLayerId, overrides });
                         } catch (e) {
                             console.error(e);
                             alert("ZIP保存に失敗しました: " + e.message);
@@ -310,6 +366,7 @@ function App() {
                     sessionId={sessionId}
                     spectatorShareId={spectatorShareId}
                     onOpenSplitScreen={() => setCurrentScreen('split')}
+                    appSettings={appSettings}
                 />
             ) : currentScreen === 'split' ? (
                 <FleetSplitScreen
@@ -325,7 +382,7 @@ function App() {
                 <EditScreen
                     units={units}
                     setUnits={setUnits}
-                    mapImage={mapImage}
+                    mapImage={currentMapImage}
                     onSwitchScreen={() => {
                         setCurrentScreen('main');
                         setEditingShipIndices(null);
@@ -343,12 +400,14 @@ function App() {
                     shipTypes={shipTypes} setShipTypes={setShipTypes}
                     shipClasses={shipClasses} setShipClasses={setShipClasses}
                     fleetTypes={fleetTypes} setFleetTypes={setFleetTypes}
+                    appSettings={appSettings} setAppSettings={setAppSettings}
                     isSpectator={isSpectator}
                 />
             ) : (
                 <ShipListScreen
                     units={units}
                     setUnits={setUnits}
+                    layers={layers} // Added
                     shipTypes={shipTypes}
                     shipClasses={shipClasses}
                     onSwitchScreen={() => setCurrentScreen('main')}

@@ -2,264 +2,78 @@ import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import { parseUnitCode, parseShipString, formatShipString } from './parser';
 
-// データ構造の定義（内部利用）
-// Pin (Unit): { id, x, y, type: 'fleet'|'label'|'image', fleets: [Fleet], text?, src?, ... }
-// Fleet: { id, code, name, ships: [], remarks: "" }
-// Ship: { type, classCode, number, name }
+// New Project Structure:
+// root/
+//   layers.json  (Contains metadata and units for all layers)
+//   layers/
+//     layer{id}/
+//       map.png
+//   config/
+//     (overrides)
 
 export const loadProject = async (file) => {
     const zip = await JSZip.loadAsync(file);
     const data = {
-        mapImage: null,
-        units: [], // Pins
-        images: []
+        layers: [],
+        overrides: {}
     };
 
-    // マップ画像の読み込み
-    const bgFile = zip.file("maps/map_bg.png");
-    if (bgFile) {
-        const blob = await bgFile.async("blob");
-        data.mapImage = URL.createObjectURL(blob);
-        data.mapImageBlob = blob;
-    }
+    // 1. Check for New Format (layers.json)
+    const layersFile = zip.file("layers.json");
+    if (layersFile) {
+        try {
+            const layersJson = await layersFile.async("string");
+            data.layers = JSON.parse(layersJson);
 
-    // 1. 新しい構造 (fleet/pinN/) の読み込みを試行
-    const pinFolders = new Set();
-    zip.forEach((relativePath, zipEntry) => {
-        const match = relativePath.match(/^fleet\/pin(\d+)\/pin_info\.txt$/);
-        if (match) {
-            pinFolders.add(match[1]);
-        }
-    });
-
-    if (pinFolders.size > 0) {
-        // 新形式
-        for (const pinIdStr of pinFolders) {
-            const pinDir = `fleet/pin${pinIdStr}/`;
-            const infoFile = zip.file(`${pinDir}pin_info.txt`);
-
-            let pin = {
-                id: parseInt(pinIdStr),
-                x: 0,
-                y: 0,
-                type: 'fleet',
-                fleets: [],
-                ships: [] // 互換性のため（使用しないがエラー回避）
-            };
-
-            // pin_info.txt 解析
-            if (infoFile) {
-                const content = await infoFile.async("string");
-                content.split('\n').forEach(line => {
-                    const [key, ...values] = line.split(':');
-                    if (!key) return;
-                    const val = values.join(':').trim();
-                    if (key === 'Pos') {
-                        const [px, py] = val.split(',').map(Number);
-                        pin.x = isNaN(px) ? 0 : px;
-                        pin.y = isNaN(py) ? 0 : py;
-                    } else if (key === 'Type') {
-                        pin.type = val;
-                    } else if (key === 'Points') {
-                        pin.points = val.split(';').map(p => {
-                            const [px, py] = p.split(',').map(Number);
-                            return { x: px, y: py };
-                        });
-                    } else if (key === 'Arrow') {
-                        pin.arrow = val === 'true';
-                    } else if (key === 'DisplayName') {
-                        pin.displayName = val;
-                    } else if (key === 'Text') {
-                        pin.text = val;
-                    } else if (key === 'FontSize') {
-                        pin.fontSize = parseInt(val);
-                    } else if (key === 'Color') {
-                        pin.color = val;
-                    } else if (key === 'Width') {
-                        pin.width = parseInt(val);
-                    } else if (key === 'Rotation') {
-                        pin.rotation = parseInt(val);
-                    } else if (key === 'ShapeType') {
-                        pin.shapeType = val;
-                        pin.type = 'shape'; // Ensure type is shape
-                    } else if (key === 'Height') {
-                        pin.height = parseInt(val);
-                    } else if (key === 'Opacity') {
-                        pin.opacity = parseFloat(val);
-                    }
-                    // Image Src handling is tricky for blob, skip for now or implement if needed
-                });
-            }
-
-            // Pin内のFleet読み込み
-            // fleet/pinN/fleetM/
-            const fleetFolders = [];
-            zip.forEach((relativePath, zipEntry) => {
-                if (relativePath.startsWith(pinDir)) {
-                    const match = relativePath.match(new RegExp(`^${pinDir}fleet(\\d+)\/fleet_index\.txt$`));
-                    if (match) fleetFolders.push(match[1]);
-                }
-            });
-
-            for (const fleetIdStr of fleetFolders) {
-                const fleetDir = `${pinDir}fleet${fleetIdStr}/`;
-                const indexFile = zip.file(`${fleetDir}fleet_index.txt`);
-
-                let fleet = {
-                    id: Date.now() + Math.random(), // Unique ID inside
-                    code: 'New',
-                    name: '',
-                    ships: [],
-                    remarks: ''
-                };
-
-                if (indexFile) {
-                    const content = await indexFile.async("string");
-                    content.split('\n').forEach(line => {
-                        const [key, ...values] = line.split(':');
-                        if (key) {
-                            const val = values.join(':').trim();
-                            if (key === 'Code') fleet.code = val;
-                            if (key === 'Name') fleet.name = val;
-                            if (key === 'Remarks') fleet.remarks = val;
-                        }
-                    });
-                }
-
-                // Ships
-                // fleet/pinN/fleetM/XXX.txt
-                const shipFiles = [];
-                zip.forEach((relativePath) => {
-                    if (relativePath.startsWith(fleetDir) && relativePath.endsWith('.txt') && !relativePath.endsWith('_index.txt')) {
-                        shipFiles.push(relativePath);
-                    }
-                });
-
-                for (const sf of shipFiles) {
-                    const content = await zip.file(sf).async("string");
-                    const info = {};
-                    content.split('\n').forEach(line => {
-                        const [key, ...values] = line.split(':');
-                        if (key && values) info[key.trim()] = values.join(':').trim();
-                    });
-                    fleet.ships.push({
-                        type: info['Type'] || '',
-                        classCode: info['Class'] || '',
-                        number: info['No'] || '',
-                        name: info['Name'] || ''
-                    });
-                }
-
-                // Load Fleet Image
-                const imgFile = zip.file(`image/pin${pinIdStr}/fleet${fleetIdStr}.png`);
+            // Load Map Images for each layer
+            for (const layer of data.layers) {
+                const imgPath = `layers/layer${layer.id}/map.png`;
+                const imgFile = zip.file(imgPath);
                 if (imgFile) {
-                    const b64 = await imgFile.async("base64");
-                    fleet.symbolImage = `data:image/png;base64,${b64}`;
+                    const blob = await imgFile.async("blob");
+                    layer.mapImage = URL.createObjectURL(blob);
+                    layer.mapImageBlob = blob; // Keep blob for saving if not changed
+                } else {
+                    layer.mapImage = null;
+                    layer.mapImageBlob = null;
                 }
-
-                pin.fleets.push(fleet);
             }
-            data.units.push(pin);
+        } catch (e) {
+            console.error("Failed to parse layers.json", e);
+            throw new Error("Invalid project file format (layers.json corrupted)");
         }
-
     } else {
-        // 旧形式 (fleet/fleetN/) のマイグレーション読み込み
-        // 座標ごとにグルーピングが必要
+        // 2. Fallback to Legacy Format
+        console.log("Legacy format detected. Migrating to Layer 1...");
+        const legacyUnits = await loadLegacyUnits(zip);
 
-        // とりあえずフラットに読み込んでから、最後に座標でマージする
-        const tempUnits = [];
-
-        const oldFleetFolders = new Set();
-        zip.forEach((relativePath, zipEntry) => {
-            const match = relativePath.match(/^fleet\/fleet(\d+)\/$/);
-            if (match && zipEntry.dir) {
-                oldFleetFolders.add(match[1]);
-            }
-        });
-
-        for (const fid of oldFleetFolders) {
-            // ... (前回のloadProjectロジックとほぼ同じだが、fleets構造に入れる)
-            const indexFile = zip.file(`fleet/fleet${fid}/fleet${fid}_index.txt`);
-            if (indexFile) {
-                const content = await indexFile.async("string");
-                const info = {};
-                content.split('\n').forEach(line => {
-                    const [key, ...values] = line.split(':');
-                    if (key) info[key.trim()] = values.join(':').trim();
-                });
-                const [x, y] = (info['Pos'] || "0,0").split(',').map(Number);
-
-                const fleet = {
-                    id: parseInt(fid),
-                    code: info['Code'] || '',
-                    name: info['Name'] || '',
-                    remarks: info['Remarks'] || '',
-                    ships: []
-                };
-
-                // Ships
-                zip.forEach((path) => {
-                    if (path.startsWith(`fleet/fleet${fid}/`) && path.endsWith('.txt') && !path.endsWith('_index.txt')) {
-                        // ... read ship
-                    }
-                });
-
-                // ※非同期ループが複雑になるため、簡略化してここでは前回ロジックを流用せず
-                // 既存コンポーネントが壊れないよう、単純に「1ピン1艦隊」としてロードする
-                // 正式なマイグレーションはピンのマージロジックのみ実装する
-
-                // 再実装: シンプルに読み込む
-                const unitFiles = Object.keys(zip.files).filter(f => f.startsWith(`fleet/fleet${fid}/`));
-                for (const f of unitFiles) {
-                    if (f.endsWith(`.txt`) && !f.endsWith('_index.txt')) {
-                        const sContent = await zip.file(f).async("string");
-                        const sInfo = {};
-                        sContent.split('\n').forEach(line => {
-                            const [k, ...v] = line.split(':');
-                            if (k) sInfo[k.trim()] = v.join(':').trim();
-                        });
-                        fleet.ships.push({
-                            type: sInfo['Type'] || '',
-                            classCode: sInfo['Class'] || '',
-                            number: sInfo['No'] || '',
-                            name: sInfo['Name'] || ''
-                        });
-                    }
-                }
-
-                tempUnits.push({
-                    id: parseInt(fid),
-                    x: isNaN(x) ? 0 : x,
-                    y: isNaN(y) ? 0 : y,
-                    type: 'fleet',
-                    fleets: [fleet],
-                    ships: [] // 互換性
-                });
-            }
+        // Legacy Map Image
+        let mapImage = null;
+        let mapImageBlob = null;
+        const bgFile = zip.file("maps/map_bg.png");
+        if (bgFile) {
+            const blob = await bgFile.async("blob");
+            mapImage = URL.createObjectURL(blob);
+            mapImageBlob = blob;
         }
 
-        // 座標マージ (オプション: ここで同じ座標のものを1つのピンにする)
-        // 今回の要件「既存データのマイグレーション」 -> 自動マージ推奨
-        const mergedMap = new Map(); // "x,y" -> Pin
-        tempUnits.forEach(u => {
-            const key = `${u.x},${u.y}`;
-            if (mergedMap.has(key)) {
-                const existing = mergedMap.get(key);
-                existing.fleets.push(...u.fleets);
-            } else {
-                mergedMap.set(key, u);
-            }
-        });
-        data.units = Array.from(mergedMap.values());
+        data.layers = [{
+            id: 1,
+            name: "Layer 1",
+            visible: true,
+            units: legacyUnits,
+            mapImage: mapImage,
+            mapImageBlob: mapImageBlob
+        }];
     }
 
-    // 2. Config Overrides
+    // 3. Load Config Overrides
     const configDir = "config/";
     const shipTypesFile = zip.file(`${configDir}ship_types.json`);
     const shipClassesFile = zip.file(`${configDir}ship_classes.json`);
     const fleetTypesFile = zip.file(`${configDir}fleet_types.json`);
+    const appSettingsFile = zip.file(`${configDir}app_settings.json`);
 
-    data.overrides = {};
     if (shipTypesFile) {
         try { data.overrides.shipTypes = JSON.parse(await shipTypesFile.async("string")); } catch (e) { console.error(e); }
     }
@@ -269,111 +83,249 @@ export const loadProject = async (file) => {
     if (fleetTypesFile) {
         try { data.overrides.fleetTypes = JSON.parse(await fleetTypesFile.async("string")); } catch (e) { console.error(e); }
     }
+    if (appSettingsFile) {
+        try { data.overrides.appSettings = JSON.parse(await appSettingsFile.async("string")); } catch (e) { console.error(e); }
+    }
 
     return data;
 };
 
-export const saveProject = async (state) => {
-    const zip = new JSZip();
+// Helper for Legacy Loading
+const loadLegacyUnits = async (zip) => {
+    const units = [];
 
-    // 1. マップ画像
-    if (state.mapImageBlob) {
-        zip.file("maps/map_bg.png", state.mapImageBlob);
-    } else if (state.mapImage) {
-        // Fallback: Try to fetch the mapImage (DataURL or BlobURL)
-        try {
-            const res = await fetch(state.mapImage);
-            const blob = await res.blob();
-            zip.file("maps/map_bg.png", blob);
-        } catch (e) {
-            console.warn("Failed to fetch map image for saving:", e);
-        }
-    }
+    // Check for 'fleet/pinN/' structure (Intermediate Modern)
+    const pinFolders = new Set();
+    zip.forEach((relativePath) => {
+        const match = relativePath.match(/^fleet\/pin(\d+)\/pin_info\.txt$/);
+        if (match) pinFolders.add(match[1]);
+    });
 
-    // 2. ピン情報
-    state.units.forEach((pin, pinIndex) => {
-        const pinNum = pinIndex + 1;
-        const pinDir = zip.folder(`fleet/pin${pinNum}`);
+    if (pinFolders.size > 0) {
+        for (const pinIdStr of pinFolders) {
+            const pinDir = `fleet/pin${pinIdStr}/`;
+            const infoFile = zip.file(`${pinDir}pin_info.txt`);
+            let pin = { id: parseInt(pinIdStr), fleets: [], ships: [] };
 
-        // pin_info.txt
-        let pinInfo = `Pos:${pin.x},${pin.y}\nType:${pin.type || 'fleet'}`;
-        if (pin.displayName) pinInfo += `\nDisplayName:${pin.displayName}`;
-        if (pin.text) pinInfo += `\nText:${pin.text}`;
-        if (pin.fontSize) pinInfo += `\nFontSize:${pin.fontSize}`;
-        if (pin.color) pinInfo += `\nColor:${pin.color}`;
-        if (pin.width) pinInfo += `\nWidth:${pin.width}`;
-        if (pin.height) pinInfo += `\nHeight:${pin.height}`;
-        if (pin.rotation) pinInfo += `\nRotation:${pin.rotation}`;
-        if (pin.type === 'shape' && pin.shapeType) pinInfo += `\nShapeType:${pin.shapeType}`;
-        if (pin.opacity !== undefined) pinInfo += `\nOpacity:${pin.opacity}`;
-        if (pin.points) {
-            const pts = pin.points.map(p => `${p.x},${p.y}`).join(';');
-            pinInfo += `\nPoints:${pts}`;
-        }
-        if (pin.arrow !== undefined) pinInfo += `\nArrow:${pin.arrow}`;
-        pinDir.file("pin_info.txt", pinInfo);
+            if (infoFile) {
+                const content = await infoFile.async("string");
+                parsePinInfo(pin, content);
+            }
 
-        if (pin.type === 'fleet' || !pin.type) {
-            // Fleets
-            (pin.fleets || []).forEach((fleet, fleetIndex) => {
-                const fleetNum = fleetIndex + 1;
-                const fleetDir = pinDir.folder(`fleet${fleetNum}`);
-
-                // fleet_index.txt
-                const fInfo = `Code:${fleet.code}\nName:${fleet.name}\nRemarks:${fleet.remarks}`;
-                fleetDir.file(`fleet_index.txt`, fInfo);
-
-                // Ships
-                (fleet.ships || []).forEach(ship => {
-                    const fileName = `${ship.type}_${ship.classCode}${ship.number}.txt`;
-                    const content = `Type:${ship.type}\nClass:${ship.classCode}\nNo:${ship.number}\nName:${ship.name}`;
-                    fleetDir.file(fileName, content);
-                });
-
-                // Fleet Symbol Image
-                if (fleet.symbolImage && fleet.symbolImage.startsWith('data:image/')) {
-                    const imgData = fleet.symbolImage.split(',')[1];
-                    if (imgData) {
-                        zip.file(`image/pin${pinNum}/fleet${fleetNum}.png`, imgData, { base64: true });
-                    }
+            // Fleets in Pin
+            const fleetFolders = [];
+            zip.forEach((relativePath) => {
+                if (relativePath.startsWith(pinDir)) {
+                    const match = relativePath.match(new RegExp(`^${pinDir}fleet(\\d+)\/fleet_index\.txt$`));
+                    if (match) fleetFolders.push(match[1]);
                 }
             });
 
-            // 下位互換性のため、もし旧ローダーがトップレベルを見るなら...
-            // 今回は構造変更するが、旧アプリで開けなくなる可能性がある。
-            // 指示には特にないため、新構造のみ出力する。
+            for (const fleetIdStr of fleetFolders) {
+                const fleetDir = `${pinDir}fleet${fleetIdStr}/`;
+                const indexFile = zip.file(`${fleetDir}fleet_index.txt`);
+                let fleet = { id: Date.now() + Math.random(), ships: [] };
+
+                if (indexFile) {
+                    const content = await indexFile.async("string");
+                    parseFleetIndex(fleet, content);
+                }
+
+                // Ships
+                const shipFiles = [];
+                zip.forEach((relativePath) => {
+                    if (relativePath.startsWith(fleetDir) && relativePath.endsWith('.txt') && !relativePath.endsWith('_index.txt')) {
+                        shipFiles.push(relativePath);
+                    }
+                });
+
+                for (const sf of shipFiles) {
+                    const content = await zip.file(sf).async("string");
+                    const info = parseKeyValue(content);
+                    fleet.ships.push({
+                        type: info['Type'] || '',
+                        classCode: info['Class'] || '',
+                        number: info['No'] || '',
+                        name: info['Name'] || ''
+                    });
+                }
+
+                // Symbol Image
+                const imgFile = zip.file(`image/pin${pinIdStr}/fleet${fleetIdStr}.png`);
+                if (imgFile) {
+                    const b64 = await imgFile.async("base64");
+                    fleet.symbolImage = `data:image/png;base64,${b64}`;
+                }
+
+                pin.fleets.push(fleet);
+            }
+            units.push(pin);
+        }
+    } else {
+        // Oldest Format (fleet/fleetN/)
+        const oldFleetFolders = new Set();
+        zip.forEach((relativePath, zipEntry) => {
+            const match = relativePath.match(/^fleet\/fleet(\d+)\/$/);
+            if (match && zipEntry.dir) oldFleetFolders.add(match[1]);
+        });
+
+        const tempUnits = [];
+        for (const fid of oldFleetFolders) {
+            const indexFile = zip.file(`fleet/fleet${fid}/fleet${fid}_index.txt`);
+            let fleet = { id: parseInt(fid), ships: [] };
+            let pos = { x: 0, y: 0 };
+
+            if (indexFile) {
+                const content = await indexFile.async("string");
+                const info = parseKeyValue(content);
+                fleet.code = info['Code'] || '';
+                fleet.name = info['Name'] || '';
+                fleet.remarks = info['Remarks'] || '';
+                const [x, y] = (info['Pos'] || "0,0").split(',').map(Number);
+                pos = { x: isNaN(x) ? 0 : x, y: isNaN(y) ? 0 : y };
+            }
+
+            const unitFiles = Object.keys(zip.files).filter(f => f.startsWith(`fleet/fleet${fid}/`) && f.endsWith('.txt') && !f.endsWith('_index.txt'));
+            for (const f of unitFiles) {
+                const content = await zip.file(f).async("string");
+                const info = parseKeyValue(content);
+                fleet.ships.push({
+                    type: info['Type'] || '',
+                    classCode: info['Class'] || '',
+                    number: info['No'] || '',
+                    name: info['Name'] || ''
+                });
+            }
+
+            tempUnits.push({
+                id: parseInt(fid),
+                x: pos.x,
+                y: pos.y,
+                type: 'fleet',
+                fleets: [fleet],
+                ships: []
+            });
+        }
+
+        // Merge by Position
+        const mergedMap = new Map();
+        tempUnits.forEach(u => {
+            const key = `${u.x},${u.y}`;
+            if (mergedMap.has(key)) {
+                mergedMap.get(key).fleets.push(...u.fleets);
+            } else {
+                mergedMap.set(key, u);
+            }
+        });
+        units.push(...Array.from(mergedMap.values()));
+    }
+    return units;
+};
+
+const parseKeyValue = (content) => {
+    const info = {};
+    content.split('\n').forEach(line => {
+        const [k, ...v] = line.split(':');
+        if (k) info[k.trim()] = v.join(':').trim();
+    });
+    return info;
+};
+
+const parsePinInfo = (pin, content) => {
+    content.split('\n').forEach(line => {
+        const [key, ...values] = line.split(':');
+        if (!key) return;
+        const val = values.join(':').trim();
+        if (key === 'Pos') {
+            const [px, py] = val.split(',').map(Number);
+            pin.x = isNaN(px) ? 0 : px;
+            pin.y = isNaN(py) ? 0 : py;
+        } else if (key === 'Type') pin.type = val;
+        else if (key === 'Points') pin.points = val.split(';').map(p => { const [px, py] = p.split(',').map(Number); return { x: px, y: py }; });
+        else if (key === 'Arrow') pin.arrow = val === 'true';
+        else if (key === 'DisplayName') pin.displayName = val;
+        else if (key === 'Text') pin.text = val;
+        else if (key === 'FontSize') pin.fontSize = parseInt(val);
+        else if (key === 'Color') pin.color = val;
+        else if (key === 'Width') pin.width = parseInt(val);
+        else if (key === 'Rotation') pin.rotation = parseInt(val);
+        else if (key === 'ShapeType') { pin.shapeType = val; pin.type = 'shape'; }
+        else if (key === 'Height') pin.height = parseInt(val);
+        else if (key === 'Opacity') pin.opacity = parseFloat(val);
+    });
+};
+
+const parseFleetIndex = (fleet, content) => {
+    content.split('\n').forEach(line => {
+        const [key, ...values] = line.split(':');
+        if (key) {
+            const val = values.join(':').trim();
+            if (key === 'Code') fleet.code = val;
+            if (key === 'Name') fleet.name = val;
+            if (key === 'Remarks') fleet.remarks = val;
         }
     });
+};
 
-    // 3. Config Overrides
-    if (state.overrides) {
-        const configDir = zip.folder("config");
-        if (state.overrides.shipTypes) {
-            configDir.file("ship_types.json", JSON.stringify(state.overrides.shipTypes, null, 2));
-        }
-        if (state.overrides.shipClasses) {
-            configDir.file("ship_classes.json", JSON.stringify(state.overrides.shipClasses, null, 2));
-        }
-        if (state.overrides.fleetTypes) {
-            configDir.file("fleet_types.json", JSON.stringify(state.overrides.fleetTypes, null, 2));
+
+export const saveProject = async (state) => {
+    const zip = new JSZip();
+
+    // Prepare Layers JSON (strip heavy blobs)
+    const layersToSave = (state.layers || []).map(l => ({
+        ...l,
+        mapImage: undefined, // Don't save URL 
+        mapImageBlob: undefined // Don't save Blob in JSON
+    }));
+
+    zip.file("layers.json", JSON.stringify(layersToSave, null, 2));
+
+    // Save Map Images
+    for (const layer of (state.layers || [])) {
+        if (layer.mapImageBlob) {
+            zip.file(`layers/layer${layer.id}/map.png`, layer.mapImageBlob);
+        } else if (layer.mapImage && typeof layer.mapImage === 'string' && !layer.mapImage.startsWith('blob:')) {
+            // If it's a data URL or external URL? 
+            // Currently we only support blob URLs locally or data URLs.
+            // If it's a blob url we can't fetch it here easily unless we have the blob.
+            // But existing images might be there.
+            // If the user hasn't changed the image, it should be in mapImageBlob if we set it on load.
+            // If we failed to set mapImageBlob on load (e.g. created from Data URL?), we might lose it.
+            // For now, assume mapImageBlob is the source of truth for saving.
         }
     }
 
+    // Save Overrides
+    if (state.overrides) {
+        const configDir = zip.folder("config");
+        if (state.overrides.shipTypes) configDir.file("ship_types.json", JSON.stringify(state.overrides.shipTypes, null, 2));
+        if (state.overrides.shipClasses) configDir.file("ship_classes.json", JSON.stringify(state.overrides.shipClasses, null, 2));
+        if (state.overrides.fleetTypes) configDir.file("fleet_types.json", JSON.stringify(state.overrides.fleetTypes, null, 2));
+        if (state.overrides.appSettings) configDir.file("app_settings.json", JSON.stringify(state.overrides.appSettings, null, 2));
+    }
+
     const content = await zip.generateAsync({ type: "blob" });
-    saveAs(content, "deployment.zip");
+    saveAs(content, "deployment_v2.zip");
 };
 
-// 戦力状況テキスト生成 (新構造対応)
-export const generateStatusReport = (units) => {
-    return units.map(pin => {
-        if (pin.type !== 'fleet' && pin.type) return null;
+export const generateStatusReport = (layers) => {
+    // If passed flat units (legacy call), wrap
+    const targetLayers = Array.isArray(layers) && !layers[0]?.units ? [{ name: 'Default', units: layers }] : layers;
 
-        const header = `Point: (${pin.x}, ${pin.y})`;
-        const fleetTexts = (pin.fleets || []).map(f => {
-            const ships = (f.ships || []).map(s => `  - ${formatShipString(s)}`).join('\n');
-            return `Unit: ${f.code} (${f.name})\n${ships}`;
-        }).join('\n\n');
+    return targetLayers.map(layer => {
+        if (!layer.units) return '';
+        const validUnits = layer.units.filter(u => u.type === 'fleet' || !u.type);
+        if (validUnits.length === 0) return '';
 
-        return `${header}\n${fleetTexts}`;
-    }).filter(Boolean).join("\n\n----------------\n\n");
+        const layerHeader = `=== ${layer.name} ===`;
+        const unitTexts = validUnits.map(pin => {
+            const header = `Point: (${pin.x}, ${pin.y})`;
+            const fleetTexts = (pin.fleets || []).map(f => {
+                const ships = (f.ships || []).map(s => `  - ${formatShipString(s)}`).join('\n');
+                return `Unit: ${f.code} (${f.name})\n${ships}`;
+            }).join('\n\n');
+            return `${header}\n${fleetTexts}`;
+        }).join("\n\n---\n\n");
+        return `${layerHeader}\n${unitTexts}`;
+    }).filter(Boolean).join("\n\n================================\n\n");
 };

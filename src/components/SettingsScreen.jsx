@@ -4,9 +4,10 @@ const SettingsScreen = ({
     onSwitchScreen,
     shipTypes, setShipTypes,
     shipClasses, setShipClasses,
-    fleetTypes, setFleetTypes
+    fleetTypes, setFleetTypes,
+    appSettings, setAppSettings // New Props
 }) => {
-    const [activeTab, setActiveTab] = useState('types'); // 'types', 'classes', 'fleets'
+    const [activeTab, setActiveTab] = useState('types'); // 'types', 'classes', 'fleets', 'misc'
 
     // --- Duplicate Detection Logic ---
     const duplicateShipTypes = useMemo(() => {
@@ -273,6 +274,31 @@ const SettingsScreen = ({
         );
     };
 
+    // --- Misc / App Settings Editor ---
+    const renderMiscEditor = () => {
+        return (
+            <div>
+                <h3>その他設定 (App Settings)</h3>
+                <div style={{ marginTop: '10px' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
+                        <input
+                            type="checkbox"
+                            checked={appSettings?.showFleetNameOnHover ?? true}
+                            onChange={(e) => setAppSettings({ ...appSettings, showFleetNameOnHover: e.target.checked })}
+                            style={{ transform: 'scale(1.2)' }}
+                        />
+                        <span>
+                            <strong>マウスオーバー時に部隊名を表示する</strong>
+                            <div style={{ fontSize: '0.9em', color: '#666', marginTop: '2px' }}>
+                                (Show Fleet Name on Hover) - 初期値: ON
+                            </div>
+                        </span>
+                    </label>
+                </div>
+            </div>
+        );
+    };
+
     return (
         <div className="screen settings-screen" style={{ flexDirection: 'column', height: '100%', boxSizing: 'border-box' }}>
             <div className="toolbar" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', flexShrink: 0 }}>
@@ -309,12 +335,19 @@ const SettingsScreen = ({
                     >
                         部隊種別 (Fleet Types) {duplicateFleetTypes.size > 0 && <span style={{ color: 'red', fontWeight: 'bold' }}> (!)</span>}
                     </button>
+                    <button
+                        onClick={() => setActiveTab('misc')}
+                        style={{ padding: '10px 20px', background: activeTab === 'misc' ? '#ddd' : 'transparent', border: 'none', borderBottom: activeTab === 'misc' ? '2px solid black' : 'none', cursor: 'pointer', fontSize: '16px' }}
+                    >
+                        その他 (Misc)
+                    </button>
                 </div>
 
                 <div className="tab-content" style={{ marginBottom: '50px' }}>
                     {activeTab === 'types' && renderShipTypesEditor()}
                     {activeTab === 'classes' && renderShipClassesEditor()}
                     {activeTab === 'fleets' && renderFleetTypesEditor()}
+                    {activeTab === 'misc' && renderMiscEditor()}
                 </div>
             </div>
         </div>

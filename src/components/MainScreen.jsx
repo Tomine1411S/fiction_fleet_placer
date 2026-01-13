@@ -2,12 +2,36 @@ import React, { useState, useRef, useEffect } from 'react';
 import Draggable from 'react-draggable';
 import { saveAs } from 'file-saver';
 
-const MainScreen = ({ units = [], setUnits, mapImage, onSwitchScreen, onOpenSettings, onOpenShipList, onFileUpload, onSaveZip, onDownloadReport, selectedUnitId, setSelectedUnitId, fleetTypes, isSpectator, sessionId, spectatorShareId, onOpenSplitScreen }) => {
-    // const [selectedUnitId, setSelectedUnitId] = useState(null); // Now from props
+const MainScreen = ({
+    layers = [], setLayers, activeLayerId, setActiveLayerId, // New Props
+    units = [], setUnits, mapImage: propMapImage, // Legacy/Compat props (units is activeLayer.units)
+    onSwitchScreen, onOpenSettings, onOpenShipList, onFileUpload, onSaveZip, onDownloadReport, selectedUnitId, setSelectedUnitId, fleetTypes, isSpectator, sessionId, spectatorShareId, onOpenSplitScreen,
+    appSettings // New Prop
+}) => {
+    // Computed: Active Layer
+    const activeLayer = layers.find(l => l.id === activeLayerId) || layers[0] || { units: [], id: 1 };
+
+    // Background Fallback Logic
+    // Find the highest layer <= activeLayerId that has an image
+    // Background Fallback Logic
+    // Find the LAST visible layer that has an image (Render Order: Last = Top)
+    const effectiveMapImageVal = (() => {
+        const visibleLayers = layers.filter(l => l.visible);
+        // Reverse to find the last one (top-most) first
+        const topMostWithImage = [...visibleLayers].reverse().find(l => l.mapImage);
+        return topMostWithImage ? topMostWithImage.mapImage : null;
+    })();
+    const currentMapImage = effectiveMapImageVal || propMapImage; // Fallback to prop if any
+
     const [hoveredUnitId, setHoveredUnitId] = useState(null);
     const [contextMenu, setContextMenu] = useState({ visible: false, x: 0, y: 0, unitId: null, isBackground: false });
     const [clipboard, setClipboard] = useState(null);
     const [tab, setTab] = useState('file');
+
+    const [showLayerPanel, setShowLayerPanel] = useState(false);
+    const [showImageUploadModal, setShowImageUploadModal] = useState(false);
+    const [uploadImageFile, setUploadImageFile] = useState(null);
+    const [uploadTargetLayerId, setUploadTargetLayerId] = useState(activeLayerId);
 
     // Zoom/Pan State
     const [scale, setScale] = useState(1);
@@ -19,28 +43,154 @@ const MainScreen = ({ units = [], setUnits, mapImage, onSwitchScreen, onOpenSett
     const [mergeCandidate, setMergeCandidate] = useState(null);
     const [showShapeMenu, setShowShapeMenu] = useState(false);
 
+    // Layer Drag State
+    const [draggingLayerIdx, setDraggingLayerIdx] = useState(null);
+    const [placeholderLayerIdx, setPlaceholderLayerIdx] = useState(null);
+    const layerListRef = useRef(null);
+
+
+    // --- Layer Operations ---
+    const handleAddLayer = () => {
+        if (isSpectator) return;
+        if (layers.length >= 20) {
+            alert("これ以上レイヤーを追加できません (最大20)");
+            return;
+        }
+        const newId = Math.max(...layers.map(l => l.id)) + 1;
+        setLayers([...layers, { id: newId, name: `Layer ${newId}`, visible: true, units: [], mapImage: null }]);
+        setActiveLayerId(newId);
+    };
+
+    const handleToggleVisibility = (id) => {
+        // Toggle visibility. Note: Requirement says "Inactive layers... hidden in map". 
+        // But also "Display switching". We allow toggling.
+        // If Active Layer is toggled off, should it be hidden? Usually Active implies Visible.
+        // We will force Active to be Visible when selected?
+        setLayers(layers.map(l => l.id === id ? { ...l, visible: !l.visible } : l));
+    };
+
+    const handleDeleteLayer = (id) => {
+        if (isSpectator) return;
+        if (layers.length <= 1) return;
+        if (!window.confirm(`Layer ${id} を削除しますか？`)) return;
+
+        const newLayers = layers.filter(l => l.id !== id);
+        setLayers(newLayers);
+        if (activeLayerId === id) {
+            setActiveLayerId(newLayers[newLayers.length - 1].id);
+        }
+    };
+
+    const handleLayerDragStart = (e, index) => {
+        if (isSpectator) return;
+        setDraggingLayerIdx(index);
+        setPlaceholderLayerIdx(index);
+    };
+
+    const handleLayerDrag = (e, data) => {
+        // Simple Y-axis list drag logic
+        const ITEM_HEIGHT = 50; // Approximate height of a layer item
+        const moveCount = Math.round(data.y / ITEM_HEIGHT);
+        let newIdx = draggingLayerIdx + moveCount;
+        newIdx = Math.max(0, Math.min(newIdx, layers.length - 1));
+
+        if (newIdx !== placeholderLayerIdx) {
+            setPlaceholderLayerIdx(newIdx);
+        }
+    };
+
+    const handleLayerDragStop = (e, data) => {
+        if (draggingLayerIdx === null) return;
+
+        if (draggingLayerIdx !== placeholderLayerIdx) {
+            const newLayers = [...layers];
+            const [movedLayer] = newLayers.splice(draggingLayerIdx, 1);
+            newLayers.splice(placeholderLayerIdx, 0, movedLayer);
+            setLayers(newLayers);
+        }
+        setDraggingLayerIdx(null);
+        setPlaceholderLayerIdx(null);
+    };
+
+    const handleDuplicateLayer = (layerId) => {
+        if (isSpectator) return;
+        if (layers.length >= 20) {
+            alert("これ以上レイヤーを追加できません (最大20)");
+            return;
+        }
+
+        const targetLayer = layers.find(l => l.id === layerId);
+        if (!targetLayer) return;
+
+        const newLayerId = Math.max(...layers.map(l => l.id)) + 1;
+
+        // Deep clone units and regenerate IDs to avoid conflicts
+        const newUnits = (targetLayer.units || []).map((u, i) => {
+            // Basic clone
+            const unitClone = JSON.parse(JSON.stringify(u));
+            // Assign new ID. ensure uniqueness. 
+            // Using Date.now() might collide if fast loop, so add index offset/random
+            unitClone.id = Date.now() + i + Math.floor(Math.random() * 1000);
+            return unitClone;
+        });
+
+        const newLayer = {
+            ...targetLayer,
+            id: newLayerId,
+            name: `${targetLayer.name} (Copy)`,
+            units: newUnits,
+            visible: true
+            // mapImage/mapImageBlob are copied. 
+            // Note: If mapImage is a Blob URL, it might be valid but double check lifecycle. 
+            // For simple usage, copying the string URL is fine so long as blob exists.
+        };
+
+        const newLayers = [...layers, newLayer];
+        setLayers(newLayers);
+        setActiveLayerId(newLayerId);
+    };
+
+    const handleImageDelete = (layerId) => {
+        if (isSpectator) return;
+        if (!window.confirm("このレイヤーの画像を削除しますか？")) return;
+        setLayers(layers.map(l => l.id === layerId ? { ...l, mapImage: null, mapImageBlob: null } : l));
+    };
+
+    const handleImageUploadConfirm = () => {
+        if (uploadImageFile && uploadTargetLayerId) {
+            const url = URL.createObjectURL(uploadImageFile);
+            setLayers(layers.map(l => l.id === uploadTargetLayerId ? { ...l, mapImage: url, mapImageBlob: uploadImageFile } : l));
+            setShowImageUploadModal(false);
+            setUploadImageFile(null);
+        }
+    };
+
     // --- Download Handlers ---
     const handleDownloadTXT = () => {
         try {
             let text = "";
-            units.forEach(unit => {
-                if (unit.type === 'fleet' || !unit.type) { // Include only fleet pins
-                    // Pin Name
-                    const pinName = unit.displayName || (unit.fleets || []).map(f => f.code).join(' + ') || 'No Name';
-                    text += `・${pinName}\n`;
+            // Flatten relevant layers (Visible only? or All? Plan says "Ship List counts displayed". Download should likely match.)
+            const targetLayers = layers.filter(l => l.visible);
 
-                    (unit.fleets || []).forEach(fleet => {
-                        // Fleet Name line
-                        text += `　・${fleet.name || 'No Name'}\n`;
-
-                        (fleet.ships || []).forEach((ship) => {
-                            // Ship Line
-                            const shipId = `${ship.type || ''}-${ship.classCode || ''}${ship.number || ''}`;
-                            text += `　　・${shipId} ${ship.name || 'No Name'}\n`;
+            targetLayers.forEach(layer => {
+                text += `[${layer.name}]\n`;
+                const layerUnits = layer.units || [];
+                layerUnits.forEach(unit => {
+                    if (unit.type === 'fleet' || !unit.type) {
+                        // Pin Name
+                        const pinName = unit.displayName || (unit.fleets || []).map(f => f.code).join(' + ') || 'No Name';
+                        text += `・${pinName}\n`;
+                        (unit.fleets || []).forEach(fleet => {
+                            text += `　・${fleet.name || 'No Name'}\n`;
+                            (fleet.ships || []).forEach((ship) => {
+                                const shipId = `${ship.type || ''}-${ship.classCode || ''}${ship.number || ''}`;
+                                text += `　　・${shipId} ${ship.name || 'No Name'}\n`;
+                            });
                         });
-                    });
-                }
+                    }
+                });
             });
+
             const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
             saveAs(blob, "fleet_structure.txt");
             setShowDownloadModal(false);
@@ -52,37 +202,41 @@ const MainScreen = ({ units = [], setUnits, mapImage, onSwitchScreen, onOpenSett
 
     const handleDownloadCSV = () => {
         try {
-            let csv = "no,pin-name,fleet-name,fleet-ID,fleet-type,ship-num-in-fleet,ship-name,ship-ID\n";
+            let csv = "layer,no,pin-name,fleet-name,fleet-ID,fleet-type,ship-num-in-fleet,ship-name,ship-ID\n";
             let globalNo = 1;
+            const targetLayers = layers.filter(l => l.visible);
 
-            units.forEach(unit => {
-                if (unit.type === 'fleet' || !unit.type) {
-                    const pinName = unit.displayName || (unit.fleets || []).map(f => f.code).join(' + ') || 'No Name';
+            targetLayers.forEach(layer => {
+                const layerUnits = layer.units || [];
+                layerUnits.forEach(unit => {
+                    if (unit.type === 'fleet' || !unit.type) {
+                        const pinName = unit.displayName || (unit.fleets || []).map(f => f.code).join(' + ') || 'No Name';
 
-                    (unit.fleets || []).forEach(fleet => {
-                        // Determine Fleet Type (T, D, etc.)
-                        let fType = "";
-                        if (fleet.code) {
-                            const match = fleet.code.match(/(\d+)([A-Z]+)Sq\./);
-                            if (match) fType = match[2];
-                        }
+                        (unit.fleets || []).forEach(fleet => {
+                            let fType = "";
+                            if (fleet.code) {
+                                const match = fleet.code.match(/(\d+)([A-Z]+)Sq\./);
+                                if (match) fType = match[2];
+                            }
 
-                        (fleet.ships || []).forEach((ship, idx) => {
-                            const shipId = `${ship.type || ''}-${ship.classCode || ''}${ship.number || ''}`;
-                            const line = [
-                                globalNo++,
-                                pinName,
-                                fleet.name || '',
-                                fleet.code || '',
-                                fType,
-                                idx + 1,
-                                ship.name || '',
-                                shipId
-                            ].map(v => `"${v}"`).join(","); // Quote all fields
-                            csv += line + "\n";
+                            (fleet.ships || []).forEach((ship, idx) => {
+                                const shipId = `${ship.type || ''}-${ship.classCode || ''}${ship.number || ''}`;
+                                const line = [
+                                    layer.name,
+                                    globalNo++,
+                                    pinName,
+                                    fleet.name || '',
+                                    fleet.code || '',
+                                    fType,
+                                    idx + 1,
+                                    ship.name || '',
+                                    shipId
+                                ].map(v => `"${v}"`).join(",");
+                                csv += line + "\n";
+                            });
                         });
-                    });
-                }
+                    }
+                });
             });
             const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
             saveAs(blob, "fleet_detail.csv");
@@ -96,49 +250,54 @@ const MainScreen = ({ units = [], setUnits, mapImage, onSwitchScreen, onOpenSett
     // Search State
     const [searchQuery, setSearchQuery] = useState('');
 
-    // Search Logic
+    // Search Logic (Searching all layers)
     const searchResults = React.useMemo(() => {
         if (!searchQuery.trim()) return [];
         const lowerQuery = searchQuery.toLowerCase();
-        return units.filter(u => {
-            if (u.type && u.type !== 'fleet') return false; // Only search fleets for now? Or labels too? Let's include labels if text matches
-            if (u.type === 'label' && u.text && u.text.toLowerCase().includes(lowerQuery)) return true;
+        const results = [];
 
-            // Display Name
-            if (u.displayName && u.displayName.toLowerCase().includes(lowerQuery)) return true;
-
-            // Fleets
-            if (u.fleets) {
-                return u.fleets.some(f => {
-                    if (f.code && f.code.toLowerCase().includes(lowerQuery)) return true;
-                    if (f.name && f.name.toLowerCase().includes(lowerQuery)) return true;
-                    // Ships
-                    if (f.ships) {
-                        return f.ships.some(s => {
+        layers.forEach(layer => {
+            layer.units.forEach(u => {
+                let match = false;
+                if (u.type && u.type !== 'fleet' && u.type !== 'label') return;
+                if (u.type === 'label' && u.text && u.text.toLowerCase().includes(lowerQuery)) match = true;
+                if (u.displayName && u.displayName.toLowerCase().includes(lowerQuery)) match = true;
+                if (u.fleets) {
+                    if (u.fleets.some(f => {
+                        if (f.code && f.code.toLowerCase().includes(lowerQuery)) return true;
+                        if (f.name && f.name.toLowerCase().includes(lowerQuery)) return true;
+                        if (f.ships && f.ships.some(s => {
                             if (s.name && s.name.toLowerCase().includes(lowerQuery)) return true;
                             if (s.number && s.number.includes(lowerQuery)) return true;
                             const fullStr = `${s.type}-${s.classCode}${s.number}`.toLowerCase();
                             if (fullStr.includes(lowerQuery)) return true;
                             return false;
-                        });
-                    }
-                    return false;
-                });
-            }
-            return false;
-        });
-    }, [units, searchQuery]);
+                        })) return true;
+                        return false;
+                    })) match = true;
+                }
 
-    const handleSearchResultClick = (unit) => {
-        setSelectedUnitId(unit.id);
-        // Center Map
-        // cx = (400 - position.x) / scale  <- this is converting screen to map
-        // We want map (unit.x, unit.y) to be at screen center (400, 300)
-        // 400 = unit.x * scale + position.x
-        // position.x = 400 - unit.x * scale
+                if (match) {
+                    results.push({ ...u, layerId: layer.id, layerName: layer.name });
+                }
+            });
+        });
+        return results;
+    }, [layers, searchQuery]);
+
+    const handleSearchResultClick = (result) => {
+        // Switch to that layer
+        setActiveLayerId(result.layerId);
+        // Ensure visible?
+        const layer = layers.find(l => l.id === result.layerId);
+        if (layer && !layer.visible) {
+            setLayers(layers.map(l => l.id === result.layerId ? { ...l, visible: true } : l));
+        }
+
+        setSelectedUnitId(result.id);
         setPosition({
-            x: 400 - unit.x * scale,
-            y: 300 - unit.y * scale
+            x: 400 - result.x * scale,
+            y: 300 - result.y * scale
         });
     };
 
@@ -181,12 +340,12 @@ const MainScreen = ({ units = [], setUnits, mapImage, onSwitchScreen, onOpenSett
 
     // Automatically center/fit map on image load
     useEffect(() => {
-        if (mapImgRef.current && mapImage) {
+        if (mapImgRef.current && currentMapImage) {
             // Reset position on new map load?
             // Maybe just center it.
             setPosition({ x: 0, y: 0 });
         }
-    }, [mapImage]);
+    }, [currentMapImage]);
 
     // --- Context Menu Handlers ---
 
@@ -579,6 +738,7 @@ const MainScreen = ({ units = [], setUnits, mapImage, onSwitchScreen, onOpenSett
                         <button className="btn" onClick={() => setShowDownloadModal(true)}>📄 戦力DL</button>
                         {!isSpectator && <label className="btn">🗺️ マップ背景<input type="file" hidden accept="image/*" onChange={onFileUpload} /></label>}
                         <button className="btn" onClick={onOpenSettings}>⚙ 設定</button>
+                        <button className="btn" onClick={() => setShowLayerPanel(!showLayerPanel)}>📑 レイヤー</button>
                         <button className="btn" onClick={onOpenShipList}>📋 艦艇一覧</button>
                         <button className="btn" onClick={() => setShowShareModal(true)}>🔗 共有</button>
                     </div>
@@ -635,10 +795,10 @@ const MainScreen = ({ units = [], setUnits, mapImage, onSwitchScreen, onOpenSett
                         width: '100%', height: '100%',
                         position: 'absolute'
                     }}>
-                        {mapImage && (
+                        {currentMapImage && (
                             <img
                                 ref={mapImgRef}
-                                src={mapImage}
+                                src={currentMapImage}
                                 alt="Map"
                                 style={{
                                     position: 'absolute', top: 0, left: 0,
@@ -662,7 +822,9 @@ const MainScreen = ({ units = [], setUnits, mapImage, onSwitchScreen, onOpenSett
                                     </marker>
                                 ))}
                             </defs>
-                            {units.filter(u => u.type === 'line').map(line => {
+                            {layers.filter(l => l.visible).flatMap(layer =>
+                                (layer.units || []).filter(u => u.type === 'line').map(line => ({ ...line, _layerId: layer.id }))
+                            ).map(line => {
                                 let d = '';
                                 if (line.points && line.points.length >= 2) {
                                     if (line.points.length === 2) {
@@ -671,12 +833,19 @@ const MainScreen = ({ units = [], setUnits, mapImage, onSwitchScreen, onOpenSett
                                         d = `M ${line.points[0].x} ${line.points[0].y} Q ${line.points[1].x} ${line.points[1].y} ${line.points[2].x} ${line.points[2].y}`;
                                     }
                                 }
-                                const isSelected = selectedUnitId === line.id;
+                                const isLayerActive = line._layerId === activeLayerId;
+                                const isSelected = selectedUnitId === line.id && isLayerActive; // Only select if active
                                 const color = line.color || '#FF0000';
                                 const markerId = line.arrow ? `url(#arrow-${color.replace('#', '')})` : 'none';
+                                const opacity = isLayerActive ? 1 : 0.4;
 
                                 return (
-                                    <g key={line.id} onClick={(e) => { e.stopPropagation(); setSelectedUnitId(line.id); }} style={{ pointerEvents: 'stroke', cursor: 'pointer' }}>
+                                    <g key={line.id}
+                                        onClick={(e) => {
+                                            if (!isLayerActive) return;
+                                            e.stopPropagation(); setSelectedUnitId(line.id);
+                                        }}
+                                        style={{ pointerEvents: isLayerActive ? 'stroke' : 'none', cursor: isLayerActive ? 'pointer' : 'default', opacity }}>
                                         <path d={d} stroke="transparent" strokeWidth="20" fill="none" />
                                         <path d={d} stroke={color} strokeWidth={line.width || 3} fill="none"
                                             markerEnd={markerId}
@@ -686,7 +855,7 @@ const MainScreen = ({ units = [], setUnits, mapImage, onSwitchScreen, onOpenSett
                             })}
                         </svg>
 
-                        {/* Line Handles */}
+                        {/* Line Handles (Active Layer Only) */}
                         {units.filter(u => u.type === 'line' && u.id === selectedUnitId && !isSpectator).map(line => (
                             line.points && line.points.map((p, idx) => (
                                 <Draggable
@@ -714,161 +883,192 @@ const MainScreen = ({ units = [], setUnits, mapImage, onSwitchScreen, onOpenSett
                             ))
                         ))}
 
-                        {units.map(unit => (
-                            <Draggable
-                                key={unit.id}
-                                position={{ x: unit.x, y: unit.y }}
-                                scale={scale} // adjust draggable movement by scale
-                                disabled={isSpectator}
-                                onStop={(e, data) => {
-                                    const newX = data.x;
-                                    const newY = data.y;
-                                    setUnits(units.map(u => u.id === unit.id ? { ...u, x: newX, y: newY } : u));
+                        {layers.filter(l => l.visible).flatMap(layer =>
+                            (layer.units || []).map(unit => ({ ...unit, _layerId: layer.id }))
+                        ).map(unit => {
+                            const isLayerActive = unit._layerId === activeLayerId;
+                            // Only active layer units are interactive
+                            const isInteractable = isLayerActive && !isSpectator;
 
-                                    // Collision Check for Merge (only for fleets)
-                                    if ((!unit.type || unit.type === 'fleet') && !isSpectator) {
-                                        const target = units.find(u => {
-                                            if (u.id === unit.id) return false;
-                                            if (u.type && u.type !== 'fleet') return false;
-                                            const dist = Math.hypot(u.x - newX, u.y - newY);
-                                            return dist < 40; // Threshold
-                                        });
-                                        if (target) {
-                                            setMergeCandidate({ source: { ...unit, x: newX, y: newY }, target });
+                            return (
+                                <Draggable
+                                    key={unit.id}
+                                    position={{ x: unit.x, y: unit.y }}
+                                    scale={scale}
+                                    disabled={!isInteractable}
+                                    onStop={(e, data) => {
+                                        // Safety check: ensure we are modifying active layer units
+                                        if (!isLayerActive) return;
+
+                                        const newX = data.x;
+                                        const newY = data.y;
+                                        setUnits(units.map(u => u.id === unit.id ? { ...u, x: newX, y: newY } : u));
+
+                                        // Collision Check for Merge (only for fleets)
+                                        if ((!unit.type || unit.type === 'fleet') && !isSpectator) {
+                                            const target = units.find(u => {
+                                                if (u.id === unit.id) return false;
+                                                if (u.type && u.type !== 'fleet') return false;
+                                                const dist = Math.hypot(u.x - newX, u.y - newY);
+                                                return dist < 40; // Threshold
+                                            });
+                                            if (target) {
+                                                setMergeCandidate({ source: { ...unit, x: newX, y: newY }, target });
+                                            }
                                         }
-                                    }
-                                }}
-                            >
-                                <div
-                                    className="unit-element"
-                                    onTouchStart={() => {
-                                        if (activeUnit && activeUnit.type === 'line') return;
-                                        setSelectedUnitId(unit.id);
-                                    }}
-                                    onContextMenu={(e) => handleContextMenu(e, unit.id)}
-                                    onClick={(e) => { e.stopPropagation(); setSelectedUnitId(unit.id); }}
-                                    onMouseEnter={() => { if (!selectedUnitId) setHoveredUnitId(unit.id); }}
-                                    onMouseLeave={() => setHoveredUnitId(null)}
-                                    style={{
-                                        position: 'absolute', cursor: 'grab',
-                                        zIndex: (selectedUnitId === unit.id || hoveredUnitId === unit.id) ? 200 : 100, // Pop to front if active
-                                        pointerEvents: (activeUnit && activeUnit.type === 'line' && activeUnit.id !== unit.id) ? 'none' : 'auto',
-                                        opacity: (activeUnit && activeUnit.type === 'line' && activeUnit.id !== unit.id) ? 0.5 : 1 // Visual cue
                                     }}
                                 >
-                                    {(!unit.type || unit.type === 'fleet') && (
-                                        <div
-                                            style={{
-                                                color: unit.color || 'red',
-                                                fontWeight: 'bold',
-                                                textShadow: (selectedUnitId === unit.id || (!selectedUnitId && hoveredUnitId === unit.id)) ? '2px 2px 2px rgba(0,0,0,0.8), 0 0 5px white' : '0 0 3px white',
-                                                whiteSpace: 'nowrap'
-                                            }}
-                                        >
-                                            ▼
-                                            <span className="unit-label" style={{ marginLeft: '4px', display: 'inline-block', verticalAlign: 'top', textAlign: 'left', whiteSpace: 'normal' }}>
-                                                {unit.displayName ?
-                                                    unit.displayName.split(/\u3000\u3000/).map((str, i) => <div key={i}>{str}</div>) :
-                                                    ((unit.fleets || []).map(f => f.code).join(' + ') || 'No Name')
-                                                }
-                                            </span>
+                                    <div
+                                        className="unit-element"
+                                        onTouchStart={() => {
+                                            if (!isInteractable) return;
+                                            if (activeUnit && activeUnit.type === 'line') return;
+                                            setSelectedUnitId(unit.id);
+                                        }}
+                                        onContextMenu={(e) => { if (isInteractable) handleContextMenu(e, unit.id); }}
+                                        onClick={(e) => {
+                                            if (!isInteractable) return;
+                                            e.stopPropagation(); setSelectedUnitId(unit.id);
+                                        }}
+                                        onMouseEnter={() => { if (!selectedUnitId && isInteractable) setHoveredUnitId(unit.id); }}
+                                        onMouseLeave={() => setHoveredUnitId(null)}
+                                        style={{
+                                            position: 'absolute', cursor: isInteractable ? 'grab' : 'default',
+                                            zIndex: (selectedUnitId === unit.id || hoveredUnitId === unit.id) ? 200 : 100,
+                                            pointerEvents: (activeUnit && activeUnit.type === 'line' && activeUnit.id !== unit.id) ? 'none' : 'auto', // Keep existing logic?
+                                            opacity: ((activeUnit && activeUnit.type === 'line' && activeUnit.id !== unit.id) ? 0.5 : 1) // Ghost inactive layers
+                                        }}
+                                    >
+                                        {(!unit.type || unit.type === 'fleet') && (
+                                            <div
+                                                style={{
+                                                    color: unit.color || 'red',
+                                                    fontWeight: 'bold',
+                                                    textShadow: (selectedUnitId === unit.id || (!selectedUnitId && hoveredUnitId === unit.id)) ? '2px 2px 2px rgba(0,0,0,0.8), 0 0 5px white' : '0 0 3px white',
+                                                    whiteSpace: 'nowrap'
+                                                }}
+                                            >
+                                                ▼
+                                                <span className="unit-label" style={{ marginLeft: '4px', display: 'inline-block', verticalAlign: 'top', textAlign: 'left', whiteSpace: 'normal' }}>
+                                                    {unit.displayName ?
+                                                        unit.displayName.split(/\u3000\u3000/).map((str, i) => <div key={i}>{str}</div>) :
+                                                        ((unit.fleets || []).map(f => f.code).join(' + ') || 'No Name')
+                                                    }
+                                                </span>
 
-                                            {/* Hover List */}
-                                            {(selectedUnitId === unit.id || (!selectedUnitId && hoveredUnitId === unit.id)) && (
+                                                {/* Layer Badge for All Layers (Hover Only) */}
+                                                {isInteractable && hoveredUnitId === unit.id && (
+                                                    <div style={{
+                                                        position: 'absolute', bottom: '-4px', left: '-4px',
+                                                        background: '#333', color: 'white', fontSize: '8px',
+                                                        padding: '1px 3px', borderRadius: '4px', opacity: 0.8
+                                                    }}>
+                                                        {unit._layerId}
+                                                    </div>
+                                                )}
+
+                                                {/* Hover List (Active Only) */}
+                                                {isInteractable && (selectedUnitId === unit.id || (!selectedUnitId && hoveredUnitId === unit.id)) && (
+                                                    <div style={{
+                                                        position: 'absolute',
+                                                        top: '100%',
+                                                        left: '1.2em',
+                                                        transform: 'none',
+                                                        background: 'rgba(255, 255, 255, 0.9)',
+                                                        border: '1px solid #ccc',
+                                                        padding: '4px',
+                                                        borderRadius: '4px',
+                                                        fontSize: '0.8em',
+                                                        color: 'black',
+                                                        zIndex: 101,
+                                                        pointerEvents: 'none',
+                                                        marginTop: '2px',
+                                                        display: 'grid',
+                                                        gridTemplateColumns: 'auto auto 1fr',
+                                                        alignItems: 'center',
+                                                        gap: '0 4px',
+                                                        whiteSpace: 'nowrap',
+                                                        textShadow: 'none'
+                                                    }}>
+                                                        {(unit.fleets || []).map((f, fi) => {
+                                                            const match = f.code.match(/^(\d{3,4})([A-Z]+)Sq\.$/);
+                                                            const typeCode = match ? match[2] : null;
+                                                            return (
+                                                                <React.Fragment key={fi}>
+                                                                    <div style={{ display: 'flex', justifyContent: 'center', minWidth: '1.2em' }}>
+                                                                        {typeCode && (
+                                                                            <img
+                                                                                src={`/assets/ships/${typeCode}.png`}
+                                                                                alt=""
+                                                                                style={{ height: '1.2em', verticalAlign: 'middle' }}
+                                                                                onError={(e) => e.target.style.display = 'none'}
+                                                                            />
+                                                                        )}
+                                                                    </div>
+                                                                    <span style={{ fontWeight: 'bold', textAlign: 'left' }}>
+                                                                        {f.code}{appSettings?.showFleetNameOnHover !== false ? ':' : ''}
+                                                                    </span>
+                                                                    <span>{appSettings?.showFleetNameOnHover !== false ? f.name : ''}</span>
+                                                                </React.Fragment>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
+                                        {
+                                            unit.type === 'label' && (
                                                 <div style={{
-                                                    position: 'absolute',
-                                                    top: '100%',
-                                                    left: '1.2em',
-                                                    transform: 'none',
-                                                    background: 'rgba(255, 255, 255, 0.9)',
-                                                    border: '1px solid #ccc',
-                                                    padding: '4px',
-                                                    borderRadius: '4px',
-                                                    fontSize: '0.8em',
-                                                    color: 'black',
-                                                    zIndex: 101,
-                                                    pointerEvents: 'none',
-                                                    marginTop: '2px',
-                                                    display: 'grid',
-                                                    gridTemplateColumns: 'auto 1fr',
-                                                    alignItems: 'center',
-                                                    gap: '0 4px',
-                                                    textAlign: 'left',
-                                                    textShadow: 'none',
-                                                    width: 'max-content'
+                                                    color: unit.color || 'black',
+                                                    fontSize: unit.fontSize || 16,
+                                                    border: selectedUnitId === unit.id ? '1px dashed #666' : 'none',
+                                                    padding: '2px',
+                                                    whiteSpace: 'pre',
+                                                    transform: `rotate(${unit.rotation || 0}deg)`,
+                                                    transformOrigin: 'center'
                                                 }}>
-
-                                                    {(unit.fleets || []).map((f, idx) => {
-                                                        const match = f.code.match(/^(\d{3,4})([A-Z]+)Sq\.$/);
-                                                        const typeCode = match ? match[2] : null;
-                                                        return (
-                                                            <React.Fragment key={idx}>
-                                                                <div style={{ display: 'flex', justifyContent: 'center', minWidth: '1.2em' }}>
-                                                                    {typeCode && (
-                                                                        <img
-                                                                            src={`/assets/ships/${typeCode}.png`}
-                                                                            alt=""
-                                                                            style={{ height: '1.2em', verticalAlign: 'middle' }}
-                                                                            onError={(e) => e.target.style.display = 'none'}
-                                                                        />
-                                                                    )}
-                                                                </div>
-                                                                <div style={{ whiteSpace: 'nowrap' }}>
-                                                                    {f.code}
-                                                                </div>
-                                                            </React.Fragment>
-                                                        );
-                                                    })}
+                                                    {unit.text || 'Label'}
                                                 </div>
-                                            )}
-                                        </div>
-                                    )}
-                                    {unit.type === 'label' && (
-                                        <div style={{
-                                            color: unit.color || 'black',
-                                            fontSize: unit.fontSize || 16,
-                                            border: selectedUnitId === unit.id ? '1px dashed #666' : 'none',
-                                            padding: '2px',
-                                            whiteSpace: 'pre',
-                                            transform: `rotate(${unit.rotation || 0}deg)`,
-                                            transformOrigin: 'center'
-                                        }}>
-                                            {unit.text || 'Label'}
-                                        </div>
-                                    )}
-                                    {unit.type === 'image' && (
-                                        <img src={unit.src} alt="added" style={{ width: unit.width || 100, border: selectedUnitId === unit.id ? '2px solid blue' : 'none' }} />
-                                    )}
-                                    {unit.type === 'shape' && (
-                                        <div style={{
-                                            width: unit.width || 100,
-                                            height: unit.height || 100,
-                                            transform: `rotate(${unit.rotation || 0}deg)`,
-                                            transformOrigin: 'center',
-                                            border: selectedUnitId === unit.id ? '2px dashed #333' : 'none'
-                                        }}>
-                                            <svg width="100%" height="100%" viewBox="0 0 100 100" style={{ overflow: 'visible' }} preserveAspectRatio="none">
-                                                {unit.shapeType === 'circle' && (
-                                                    <circle cx="50" cy="50" r="48" fill={unit.color || '#aaaaaa'} fillOpacity={unit.opacity ?? 0.8} stroke="black" strokeWidth="2" />
-                                                )}
-                                                {unit.shapeType === 'rect' && (
-                                                    <rect x="2" y="2" width="96" height="96" fill={unit.color || '#aaaaaa'} fillOpacity={unit.opacity ?? 0.8} stroke="black" strokeWidth="2" />
-                                                )}
-                                                {unit.shapeType === 'triangle' && (
-                                                    <polygon points="50,2 98,98 2,98" fill={unit.color || '#aaaaaa'} fillOpacity={unit.opacity ?? 0.8} stroke="black" strokeWidth="2" />
-                                                )}
-                                                {unit.shapeType === 'convex' && (
-                                                    <polygon points="25,2 75,2 75,50 98,50 98,98 2,98 2,50 25,50" fill={unit.color || '#aaaaaa'} fillOpacity={unit.opacity ?? 0.8} stroke="black" strokeWidth="2" />
-                                                )}
-                                            </svg>
-                                        </div>
-                                    )}
-                                </div>
-                            </Draggable>
-                        ))}
+                                            )
+                                        }
+                                        {
+                                            unit.type === 'image' && (
+                                                <img src={unit.src} alt="added" style={{ width: unit.width || 100, border: selectedUnitId === unit.id ? '2px solid blue' : 'none' }} />
+                                            )
+                                        }
+                                        {
+                                            unit.type === 'shape' && (
+                                                <div style={{
+                                                    width: unit.width || 100,
+                                                    height: unit.height || 100,
+                                                    transform: `rotate(${unit.rotation || 0}deg)`,
+                                                    transformOrigin: 'center',
+                                                    border: selectedUnitId === unit.id ? '2px dashed #333' : 'none'
+                                                }}>
+                                                    <svg width="100%" height="100%" viewBox="0 0 100 100" style={{ overflow: 'visible' }} preserveAspectRatio="none">
+                                                        {unit.shapeType === 'circle' && (
+                                                            <circle cx="50" cy="50" r="48" fill={unit.color || '#aaaaaa'} fillOpacity={unit.opacity ?? 0.8} stroke="black" strokeWidth="2" />
+                                                        )}
+                                                        {unit.shapeType === 'rect' && (
+                                                            <rect x="2" y="2" width="96" height="96" fill={unit.color || '#aaaaaa'} fillOpacity={unit.opacity ?? 0.8} stroke="black" strokeWidth="2" />
+                                                        )}
+                                                        {unit.shapeType === 'triangle' && (
+                                                            <polygon points="50,2 98,98 2,98" fill={unit.color || '#aaaaaa'} fillOpacity={unit.opacity ?? 0.8} stroke="black" strokeWidth="2" />
+                                                        )}
+                                                        {unit.shapeType === 'convex' && (
+                                                            <polygon points="25,2 75,2 75,50 98,50 98,98 2,98 2,50 25,50" fill={unit.color || '#aaaaaa'} fillOpacity={unit.opacity ?? 0.8} stroke="black" strokeWidth="2" />
+                                                        )}
+                                                    </svg>
+                                                </div>
+                                            )
+                                        }
+                                    </div>
+                                </Draggable>
+                            );
+                        })}
                     </div>
                 </div>
-            </div>
+            </div >
 
             {/* Context Menu */}
             {
@@ -985,6 +1185,160 @@ const MainScreen = ({ units = [], setUnits, mapImage, onSwitchScreen, onOpenSett
                                     setMergeCandidate(null);
                                 }} style={{ background: '#007bff', color: 'white' }}>統合する</button>
                             </div>
+                        </div>
+                    </div>
+                )
+            }
+            {/* Image Upload Selection Modal */}
+            {
+                showImageUploadModal && (
+                    <div className="modal-overlay">
+                        <div className="modal-content" style={{ width: '300px', background: 'white', padding: '20px', borderRadius: '8px', position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 1200, boxShadow: '0 4px 6px rgba(0,0,0,0.3)' }}>
+                            <h3 style={{ marginTop: 0 }}>マップ画像の適用先</h3>
+                            <div style={{ margin: '20px 0' }}>
+                                <p>アップロードした画像をどのレイヤーに設定しますか？</p>
+                                <select
+                                    value={uploadTargetLayerId}
+                                    onChange={(e) => setUploadTargetLayerId(parseInt(e.target.value))}
+                                    style={{ width: '100%', padding: '8px', fontSize: '16px' }}
+                                >
+                                    {layers.map(l => (
+                                        <option key={l.id} value={l.id}>
+                                            {l.id === activeLayerId ? '★ ' : ''}{l.name}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                            <div className="modal-actions" style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+                                <button className="btn" onClick={() => setShowImageUploadModal(false)}>キャンセル</button>
+                                <button className="btn btn-primary" style={{ background: '#007bff', color: 'white' }} onClick={handleImageUploadConfirm}>適用</button>
+                            </div>
+                        </div>
+                    </div>
+                )
+            }
+            {
+                showLayerPanel && (
+                    <div className="layer-panel" style={{
+                        position: 'absolute', top: '60px', right: '10px',
+                        background: 'white', border: '1px solid #ccc',
+                        padding: '10px', borderRadius: '4px', boxShadow: '0 2px 5px rgba(0,0,0,0.2)',
+                        zIndex: 1100, width: '250px', maxHeight: '80vh', overflowY: 'auto'
+                    }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                            <h4 style={{ margin: 0 }}>レイヤー管理</h4>
+                            <button onClick={() => setShowLayerPanel(false)} style={{ cursor: 'pointer', border: 'none', background: 'transparent' }}>✖</button>
+                        </div>
+                        {!isSpectator && (
+                            <div style={{ marginBottom: '10px', display: 'flex', gap: '5px' }}>
+                                <button className="btn" style={{ fontSize: '0.8em', padding: '2px 5px' }} onClick={handleAddLayer}>+ 追加</button>
+                            </div>
+                        )}
+                        <div className="layer-list" style={{ display: 'flex', flexDirection: 'column', gap: '5px', position: 'relative' }} ref={layerListRef}>
+                            {layers.map((layer, index) => {
+                                const isDragging = index === draggingLayerIdx;
+                                let shiftY = 0;
+                                const ITEM_HEIGHT = 50 + 5; // Height + gap roughly
+                                if (draggingLayerIdx !== null && !isDragging) {
+                                    if (index > draggingLayerIdx && index <= placeholderLayerIdx) {
+                                        shiftY = -ITEM_HEIGHT;
+                                    } else if (index < draggingLayerIdx && index >= placeholderLayerIdx) {
+                                        shiftY = ITEM_HEIGHT;
+                                    }
+                                }
+
+                                return (
+                                    <div key={layer.id} style={{
+                                        transition: isDragging ? 'none' : 'transform 0.2s',
+                                        transform: `translate3d(0, ${shiftY}px, 0)`,
+                                        zIndex: isDragging ? 100 : 0
+                                    }}>
+                                        <Draggable
+                                            axis="y"
+                                            position={isDragging ? undefined : { x: 0, y: 0 }}
+                                            onStart={(e) => handleLayerDragStart(e, index)}
+                                            onDrag={handleLayerDrag}
+                                            onStop={handleLayerDragStop}
+                                            disabled={isSpectator}
+                                            handle=".drag-handle"
+                                        >
+                                            <div style={{
+                                                border: activeLayerId === layer.id ? '2px solid #007bff' : '1px solid #eee',
+                                                borderRadius: '4px', padding: '5px',
+                                                background: layer.visible ? 'white' : '#f0f0f0',
+                                                opacity: (draggingLayerIdx !== null && !isDragging) ? 0.8 : (layer.visible ? 1 : 0.7),
+                                                boxShadow: isDragging ? '0 5px 15px rgba(0,0,0,0.2)' : 'none',
+                                                position: 'relative',
+                                                height: '50px',
+                                                boxSizing: 'border-box',
+                                                display: 'flex', alignItems: 'center', gap: '5px'
+                                            }}>
+                                                {!isSpectator && (
+                                                    <div className="drag-handle" style={{ cursor: 'grab', color: '#ccc', marginRight: '2px' }}>
+                                                        ☰
+                                                    </div>
+                                                )}
+
+                                                <input
+                                                    type="checkbox"
+                                                    checked={layer.visible}
+                                                    onChange={(e) => {
+                                                        // Stop propagation to avoid picking the layer? No, checkbox is fine.
+                                                        handleToggleVisibility(layer.id);
+                                                    }}
+                                                    title="表示/非表示"
+                                                    style={{ cursor: 'pointer' }}
+                                                />
+
+                                                <span
+                                                    onClick={() => {
+                                                        setActiveLayerId(layer.id);
+                                                        // Optional: Auto-show on select?
+                                                        if (!layer.visible) handleToggleVisibility(layer.id);
+                                                    }}
+                                                    style={{
+                                                        cursor: 'pointer',
+                                                        fontWeight: activeLayerId === layer.id ? 'bold' : 'normal',
+                                                        flex: 1,
+                                                        color: activeLayerId === layer.id ? '#007bff' : 'inherit',
+                                                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
+                                                    }}
+                                                >
+                                                    {layer.name}
+                                                </span>
+
+                                                <div style={{ display: 'flex', gap: '5px', justifyContent: 'flex-end', alignItems: 'center' }}>
+                                                    {!isSpectator && (
+                                                        <>
+                                                            <button
+                                                                onClick={() => handleDuplicateLayer(layer.id)}
+                                                                title="レイヤーを複製"
+                                                                style={{ fontSize: '0.7em', color: '#333', border: '1px solid #ccc', background: 'white', cursor: 'pointer', marginRight: '2px' }}
+                                                            >
+                                                                複
+                                                            </button>
+                                                            <button disabled={layers.length <= 1} onClick={() => handleDeleteLayer(layer.id)} style={{ fontSize: '0.7em', color: 'red', border: '1px solid #ccc', background: 'white', cursor: 'pointer' }}>×</button>
+                                                        </>
+                                                    )}
+                                                    {layer.mapImage ? (
+                                                        <button onClick={() => handleImageDelete(layer.id)} style={{ fontSize: '0.7em', color: 'orange', padding: '1px' }} disabled={isSpectator}>画消</button>
+                                                    ) : (
+                                                        !isSpectator && <label style={{ fontSize: '0.7em', color: 'blue', cursor: 'pointer', border: '1px dashed blue', padding: '0 2px' }}>
+                                                            ＋画<input type="file" hidden accept="image/*" onChange={(e) => {
+                                                                const f = e.target.files[0];
+                                                                if (f) {
+                                                                    const url = URL.createObjectURL(f);
+                                                                    setLayers(prev => prev.map(l => l.id === layer.id ? { ...l, mapImage: url, mapImageBlob: f } : l));
+                                                                }
+                                                            }} />
+                                                        </label>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </Draggable>
+                                    </div>
+                                );
+                            })}
                         </div>
                     </div>
                 )
