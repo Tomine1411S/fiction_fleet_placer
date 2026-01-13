@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import Draggable from 'react-draggable';
 import { saveAs } from 'file-saver';
+import { fileToBase64 } from '../utils/fileUtils';
 
 const MainScreen = ({
     layers = [], setLayers, activeLayerId, setActiveLayerId, // New Props
@@ -47,6 +48,14 @@ const MainScreen = ({
     const [draggingLayerIdx, setDraggingLayerIdx] = useState(null);
     const [placeholderLayerIdx, setPlaceholderLayerIdx] = useState(null);
     const layerListRef = useRef(null);
+
+    // Layer Renaming
+    const [editingLayerId, setEditingLayerId] = useState(null);
+
+    const handleRenameLayer = (layerId, newName) => {
+        setLayers(layers.map(l => l.id === layerId ? { ...l, name: newName } : l));
+        setEditingLayerId(null);
+    };
 
 
     // --- Layer Operations ---
@@ -156,12 +165,17 @@ const MainScreen = ({
         setLayers(layers.map(l => l.id === layerId ? { ...l, mapImage: null, mapImageBlob: null } : l));
     };
 
-    const handleImageUploadConfirm = () => {
+    const handleImageUploadConfirm = async () => {
         if (uploadImageFile && uploadTargetLayerId) {
-            const url = URL.createObjectURL(uploadImageFile);
-            setLayers(layers.map(l => l.id === uploadTargetLayerId ? { ...l, mapImage: url, mapImageBlob: uploadImageFile } : l));
-            setShowImageUploadModal(false);
-            setUploadImageFile(null);
+            try {
+                const base64 = await fileToBase64(uploadImageFile);
+                setLayers(layers.map(l => l.id === uploadTargetLayerId ? { ...l, mapImage: base64, mapImageBlob: uploadImageFile } : l));
+                setShowImageUploadModal(false);
+                setUploadImageFile(null);
+            } catch (e) {
+                console.error("Failed to convert image", e);
+                alert("画像の処理に失敗しました");
+            }
         }
     };
 
@@ -301,10 +315,39 @@ const MainScreen = ({
         });
     };
 
+    // --- Unit Update Helpers (Cross-Layer) ---
+    const updateUnit = (unitId, patchOrFn) => {
+        setLayers(prevLayers => prevLayers.map(layer => {
+            // Optimization: check if unit exists in this layer (simple check)
+            // or just map.
+            const unitExists = layer.units.some(u => u.id === unitId);
+            if (!unitExists) return layer;
+
+            const newUnits = layer.units.map(u => {
+                if (u.id !== unitId) return u;
+                // Apply update
+                return typeof patchOrFn === 'function' ? patchOrFn(u) : { ...u, ...patchOrFn };
+            });
+            return { ...layer, units: newUnits };
+        }));
+    };
+
+    const deleteUnit = (unitId) => {
+        setLayers(prevLayers => prevLayers.map(layer => ({
+            ...layer,
+            units: layer.units.filter(u => u.id !== unitId)
+        })));
+        if (selectedUnitId === unitId) setSelectedUnitId(null);
+    };
+
     // Refs for map dimensions
     const mapImgRef = useRef(null);
 
-    const activeUnit = units.find(u => u.id === (selectedUnitId || hoveredUnitId));
+    // activeUnit logic: Search ALL visible layers (or all layers?) 
+    // Requirement: "Non-active but currently selected layer... can edit fleet info"
+    // So we should search all layers for the selected ID.
+    const allVisibleUnits = layers.filter(l => l.visible).flatMap(l => l.units);
+    const activeUnit = allVisibleUnits.find(u => u.id === (selectedUnitId || hoveredUnitId));
 
     // --- Map Control Handlers ---
     const handleWheel = (e) => {
@@ -365,17 +408,18 @@ const MainScreen = ({
     // --- Action Handlers ---
 
     const handleMenuAction = (action) => {
-        const targetUnit = units.find(u => u.id === contextMenu.unitId);
+        // Find target unit from ALL visible layers
+        const targetUnit = allVisibleUnits.find(u => u.id === contextMenu.unitId);
 
         if (action === 'delete') {
-            setUnits(units.filter(u => u.id !== contextMenu.unitId));
+            deleteUnit(contextMenu.unitId);
         }
         else if (action === 'copy' && targetUnit) {
             setClipboard({ ...targetUnit, id: Date.now() });
         }
         else if (action === 'cut' && targetUnit) {
             setClipboard({ ...targetUnit, id: Date.now() });
-            setUnits(units.filter(u => u.id !== contextMenu.unitId));
+            deleteUnit(contextMenu.unitId);
         }
         else if (action === 'edit' && targetUnit) {
             setSelectedUnitId(targetUnit.id);
@@ -392,20 +436,23 @@ const MainScreen = ({
                 x: -position.x / scale + 100, // approximate center logic 
                 y: -position.y / scale + 100
             };
+            // Paste always goes to Active Layer
             setUnits([...units, newUnit]);
         }
         else if (action === 'add_fleet' && targetUnit) {
             // Add another fleet to this pin
             // Ensure targetUnit.fleets exists
-            if (!targetUnit.fleets) targetUnit.fleets = [];
-            targetUnit.fleets.push({
-                id: Date.now(),
-                code: 'New',
-                name: '',
-                ships: [],
-                remarks: ''
+            updateUnit(targetUnit.id, (u) => {
+                const newFleets = u.fleets ? [...u.fleets] : [];
+                newFleets.push({
+                    id: Date.now(),
+                    code: 'New',
+                    name: '',
+                    ships: [],
+                    remarks: ''
+                });
+                return { ...u, fleets: newFleets };
             });
-            setUnits([...units]); // Trigger update
 
             // Auto open edit?
             setSelectedUnitId(targetUnit.id);
@@ -464,14 +511,18 @@ const MainScreen = ({
         setUnits([...units, newUnit]);
     };
 
-    const handleAddImageUpload = (e) => {
+    const handleAddImageUpload = async (e) => {
         const file = e.target.files[0];
         if (file) {
-            const url = URL.createObjectURL(file);
-            const cx = (400 - position.x) / scale;
-            const cy = (300 - position.y) / scale;
-            const newUnit = { id: Date.now(), x: cx, y: cy, type: 'image', src: url, width: 100 };
-            setUnits([...units, newUnit]);
+            try {
+                const base64 = await fileToBase64(file);
+                const cx = (400 - position.x) / scale;
+                const cy = (300 - position.y) / scale;
+                const newUnit = { id: Date.now(), x: cx, y: cy, type: 'image', src: base64, width: 100 };
+                setUnits([...units, newUnit]);
+            } catch (err) {
+                console.error("Failed to load image unit", err);
+            }
         }
     };
 
@@ -557,7 +608,6 @@ const MainScreen = ({
                         )}
 
                         {/* Line Unit */}
-                        {/* Line Unit */}
                         {activeUnit.type === 'line' && (
                             <div>
                                 <h4 style={{ margin: '5px 0' }}>ライン設定</h4>
@@ -566,7 +616,7 @@ const MainScreen = ({
                                     <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap', marginTop: '5px' }}>
                                         {['#FF0000', '#0000FF', '#008000', '#FFA500', '#800080', '#008080', '#000000', '#FF1493'].map(c => (
                                             <div key={c}
-                                                onClick={() => !isSpectator && setUnits(units.map(u => u.id === activeUnit.id ? { ...u, color: c } : u))}
+                                                onClick={() => !isSpectator && updateUnit(activeUnit.id, { color: c })}
                                                 style={{
                                                     width: '20px', height: '20px', background: c, borderRadius: '50%',
                                                     border: activeUnit.color === c ? '2px solid black' : '1px solid #ccc',
@@ -592,14 +642,14 @@ const MainScreen = ({
                                                     } else if (!isCurve && newPoints.length === 3) {
                                                         newPoints.splice(1, 1);
                                                     }
-                                                    setUnits(units.map(u => u.id === activeUnit.id ? { ...u, points: newPoints } : u));
+                                                    updateUnit(activeUnit.id, { points: newPoints });
                                                 }}
                                             /> 曲線化 (Curve)
                                         </label>
                                         <label style={{ display: 'block' }}>
                                             <input type="checkbox"
                                                 checked={activeUnit.arrow}
-                                                onChange={(e) => setUnits(units.map(u => u.id === activeUnit.id ? { ...u, arrow: e.target.checked } : u))}
+                                                onChange={(e) => updateUnit(activeUnit.id, { arrow: e.target.checked })}
                                             /> 矢印 (Arrow)
                                         </label>
                                     </>
@@ -615,7 +665,7 @@ const MainScreen = ({
                                     <label>テキスト:</label>
                                     <textarea
                                         value={activeUnit.text || ''}
-                                        onChange={(e) => setUnits(units.map(u => u.id === activeUnit.id ? { ...u, text: e.target.value } : u))}
+                                        onChange={(e) => updateUnit(activeUnit.id, { text: e.target.value })}
                                         disabled={isSpectator}
                                         style={{ width: '100%', height: '60px' }}
                                     />
@@ -625,7 +675,7 @@ const MainScreen = ({
                                     <input
                                         type="range" min="10" max="100"
                                         value={activeUnit.fontSize || 16}
-                                        onChange={(e) => setUnits(units.map(u => u.id === activeUnit.id ? { ...u, fontSize: parseInt(e.target.value) } : u))}
+                                        onChange={(e) => updateUnit(activeUnit.id, { fontSize: parseInt(e.target.value) })}
                                         disabled={isSpectator}
                                         style={{ width: '100%' }}
                                     />
@@ -635,7 +685,7 @@ const MainScreen = ({
                                     <input
                                         type="color"
                                         value={activeUnit.color || '#000000'}
-                                        onChange={(e) => setUnits(units.map(u => u.id === activeUnit.id ? { ...u, color: e.target.value } : u))}
+                                        onChange={(e) => updateUnit(activeUnit.id, { color: e.target.value })}
                                         disabled={isSpectator}
                                         style={{ display: 'block', marginTop: '5px' }}
                                     />
@@ -645,7 +695,7 @@ const MainScreen = ({
                                     <input
                                         type="range" min="0" max="360"
                                         value={activeUnit.rotation || 0}
-                                        onChange={(e) => setUnits(units.map(u => u.id === activeUnit.id ? { ...u, rotation: parseInt(e.target.value) } : u))}
+                                        onChange={(e) => updateUnit(activeUnit.id, { rotation: parseInt(e.target.value) })}
                                         disabled={isSpectator}
                                         style={{ width: '100%' }}
                                     />
@@ -665,7 +715,7 @@ const MainScreen = ({
                                     <input
                                         type="range" min="10" max="500"
                                         value={activeUnit.width || 100}
-                                        onChange={(e) => setUnits(units.map(u => u.id === activeUnit.id ? { ...u, width: parseInt(e.target.value) } : u))}
+                                        onChange={(e) => updateUnit(activeUnit.id, { width: parseInt(e.target.value) })}
                                         disabled={isSpectator}
                                         style={{ width: '100%' }}
                                     />
@@ -675,7 +725,7 @@ const MainScreen = ({
                                     <input
                                         type="range" min="10" max="500"
                                         value={activeUnit.height || 100}
-                                        onChange={(e) => setUnits(units.map(u => u.id === activeUnit.id ? { ...u, height: parseInt(e.target.value) } : u))}
+                                        onChange={(e) => updateUnit(activeUnit.id, { height: parseInt(e.target.value) })}
                                         disabled={isSpectator}
                                         style={{ width: '100%' }}
                                     />
@@ -685,7 +735,7 @@ const MainScreen = ({
                                     <input
                                         type="range" min="0" max="360"
                                         value={activeUnit.rotation || 0}
-                                        onChange={(e) => setUnits(units.map(u => u.id === activeUnit.id ? { ...u, rotation: parseInt(e.target.value) } : u))}
+                                        onChange={(e) => updateUnit(activeUnit.id, { rotation: parseInt(e.target.value) })}
                                         disabled={isSpectator}
                                         style={{ width: '100%' }}
                                     />
@@ -695,7 +745,7 @@ const MainScreen = ({
                                     <input
                                         type="color"
                                         value={activeUnit.color || '#aaaaaa'}
-                                        onChange={(e) => setUnits(units.map(u => u.id === activeUnit.id ? { ...u, color: e.target.value } : u))}
+                                        onChange={(e) => updateUnit(activeUnit.id, { color: e.target.value })}
                                         disabled={isSpectator}
                                         style={{ display: 'block', marginTop: '5px' }}
                                     />
@@ -705,7 +755,7 @@ const MainScreen = ({
                                     <input
                                         type="range" min="0" max="100"
                                         value={(activeUnit.opacity || 0.8) * 100}
-                                        onChange={(e) => setUnits(units.map(u => u.id === activeUnit.id ? { ...u, opacity: parseInt(e.target.value) / 100 } : u))}
+                                        onChange={(e) => updateUnit(activeUnit.id, { opacity: parseInt(e.target.value) / 100 })}
                                         disabled={isSpectator}
                                         style={{ width: '100%' }}
                                     />
@@ -715,8 +765,7 @@ const MainScreen = ({
 
                         {!isSpectator && (
                             <button className="btn" style={{ marginTop: '20px', background: 'red', color: 'white' }} onClick={() => {
-                                setUnits(units.filter(u => u.id !== activeUnit.id));
-                                setSelectedUnitId(null);
+                                deleteUnit(activeUnit.id);
                             }}>削除</button>
                         )}
                     </div>
@@ -855,60 +904,62 @@ const MainScreen = ({
                             })}
                         </svg>
 
-                        {/* Line Handles (Active Layer Only) */}
-                        {units.filter(u => u.type === 'line' && u.id === selectedUnitId && !isSpectator).map(line => (
-                            line.points && line.points.map((p, idx) => (
-                                <Draggable
-                                    key={`${line.id}-${idx}`}
-                                    position={{ x: p.x, y: p.y }}
-                                    scale={scale}
-                                    onDrag={(e, data) => {
-                                        const newPoints = [...line.points];
-                                        newPoints[idx] = { x: data.x, y: data.y };
-                                        setUnits(units.map(u => u.id === line.id ? { ...u, points: newPoints } : u));
-                                    }}
-                                    onStop={(e, data) => {
-                                        const newPoints = [...line.points];
-                                        newPoints[idx] = { x: data.x, y: data.y };
-                                        setUnits(units.map(u => u.id === line.id ? { ...u, points: newPoints } : u));
-                                    }}
-                                >
-                                    <div style={{
-                                        position: 'absolute', width: '8px', height: '8px', background: line.color, border: '2px solid white',
-                                        borderRadius: '50%', marginLeft: '-6px', marginTop: '-6px', cursor: 'grab', zIndex: 200,
-                                        boxShadow: '0 0 2px rgba(0,0,0,0.5)'
-                                    }}>
-                                    </div>
-                                </Draggable>
-                            ))
+                        {/* Line Handles (Selected Line Only - Any Layer) */}
+                        {(!isSpectator && activeUnit && activeUnit.type === 'line' && activeUnit.id === selectedUnitId) && activeUnit.points && activeUnit.points.map((p, idx) => (
+                            <Draggable
+                                key={`${activeUnit.id}-${idx}`}
+                                position={{ x: p.x, y: p.y }}
+                                scale={scale}
+                                onDrag={(e, data) => {
+                                    const newPoints = [...activeUnit.points];
+                                    newPoints[idx] = { x: data.x, y: data.y };
+                                    updateUnit(activeUnit.id, { points: newPoints });
+                                }}
+                                onStop={(e, data) => {
+                                    const newPoints = [...activeUnit.points];
+                                    newPoints[idx] = { x: data.x, y: data.y };
+                                    updateUnit(activeUnit.id, { points: newPoints });
+                                }}
+                            >
+                                <div style={{
+                                    position: 'absolute', width: '8px', height: '8px', background: activeUnit.color, border: '2px solid white',
+                                    borderRadius: '50%', marginLeft: '-6px', marginTop: '-6px', cursor: 'grab', zIndex: 200,
+                                    boxShadow: '0 0 2px rgba(0,0,0,0.5)'
+                                }}>
+                                </div>
+                            </Draggable>
                         ))}
 
                         {layers.filter(l => l.visible).flatMap(layer =>
                             (layer.units || []).map(unit => ({ ...unit, _layerId: layer.id }))
                         ).map(unit => {
                             const isLayerActive = unit._layerId === activeLayerId;
-                            // Only active layer units are interactive
-                            const isInteractable = isLayerActive && !isSpectator;
+                            // Interaction allowed if active layer OR spectator mode (for view only)
+                            // Spectators can hover/select/context menu, but NOT drag/edit
+                            const isInteractable = !isSpectator || true;
+                            const isDraggable = !isSpectator;
 
                             return (
                                 <Draggable
                                     key={unit.id}
                                     position={{ x: unit.x, y: unit.y }}
                                     scale={scale}
-                                    disabled={!isInteractable}
+                                    disabled={!isDraggable}
                                     onStop={(e, data) => {
-                                        // Safety check: ensure we are modifying active layer units
-                                        if (!isLayerActive) return;
+                                        // Double safety: Spectators cannot move units
+                                        if (isSpectator) return;
 
+                                        // Update ANY unit safely
                                         const newX = data.x;
                                         const newY = data.y;
-                                        setUnits(units.map(u => u.id === unit.id ? { ...u, x: newX, y: newY } : u));
+                                        updateUnit(unit.id, { x: newX, y: newY });
 
-                                        // Collision Check for Merge (only for fleets)
+                                        // Collision Check for Merge (fleets only)
                                         if ((!unit.type || unit.type === 'fleet') && !isSpectator) {
-                                            const target = units.find(u => {
-                                                if (u.id === unit.id) return false;
-                                                if (u.type && u.type !== 'fleet') return false;
+                                            // Search ALL visible units for target
+                                            const target = allVisibleUnits.find(u => {
+                                                if (u.id === unit.id) return false; // Self
+                                                if (u.type && u.type !== 'fleet') return false; // Only merge into fleets
                                                 const dist = Math.hypot(u.x - newX, u.y - newY);
                                                 return dist < 40; // Threshold
                                             });
@@ -921,22 +972,25 @@ const MainScreen = ({
                                     <div
                                         className="unit-element"
                                         onTouchStart={() => {
-                                            if (!isInteractable) return;
-                                            if (activeUnit && activeUnit.type === 'line') return;
+                                            // Always allow selection if visible
+                                            if (activeUnit && activeUnit.type === 'line' && !isSpectator) return;
                                             setSelectedUnitId(unit.id);
                                         }}
-                                        onContextMenu={(e) => { if (isInteractable) handleContextMenu(e, unit.id); }}
+                                        onContextMenu={(e) => {
+                                            // Allow context menu for spectators too (for Edit View)
+                                            handleContextMenu(e, unit.id);
+                                        }}
                                         onClick={(e) => {
-                                            if (!isInteractable) return;
                                             e.stopPropagation(); setSelectedUnitId(unit.id);
                                         }}
-                                        onMouseEnter={() => { if (!selectedUnitId && isInteractable) setHoveredUnitId(unit.id); }}
+                                        onMouseEnter={() => { if (!selectedUnitId) setHoveredUnitId(unit.id); }}
                                         onMouseLeave={() => setHoveredUnitId(null)}
                                         style={{
-                                            position: 'absolute', cursor: isInteractable ? 'grab' : 'default',
-                                            zIndex: (selectedUnitId === unit.id || hoveredUnitId === unit.id) ? 200 : 100,
-                                            pointerEvents: (activeUnit && activeUnit.type === 'line' && activeUnit.id !== unit.id) ? 'none' : 'auto', // Keep existing logic?
-                                            opacity: ((activeUnit && activeUnit.type === 'line' && activeUnit.id !== unit.id) ? 0.5 : 1) // Ghost inactive layers
+                                            position: 'absolute', cursor: isDraggable ? 'grab' : 'default',
+                                            // Z-Index: Hover/Selected > Active Layer > Inactive Layer
+                                            zIndex: (selectedUnitId === unit.id || hoveredUnitId === unit.id) ? 200 : (isLayerActive ? 150 : 100),
+                                            pointerEvents: (activeUnit && activeUnit.type === 'line' && activeUnit.id !== unit.id && !isSpectator) ? 'none' : 'auto', // Keep existing logic?
+                                            opacity: ((activeUnit && activeUnit.type === 'line' && activeUnit.id !== unit.id && !isSpectator) ? 0.5 : 1) // Ghost inactive layers
                                         }}
                                     >
                                         {(!unit.type || unit.type === 'fleet') && (
@@ -957,7 +1011,7 @@ const MainScreen = ({
                                                 </span>
 
                                                 {/* Layer Badge for All Layers (Hover Only) */}
-                                                {isInteractable && hoveredUnitId === unit.id && (
+                                                {hoveredUnitId === unit.id && (
                                                     <div style={{
                                                         position: 'absolute', bottom: '-4px', left: '-4px',
                                                         background: '#333', color: 'white', fontSize: '8px',
@@ -968,7 +1022,7 @@ const MainScreen = ({
                                                 )}
 
                                                 {/* Hover List (Active Only) */}
-                                                {isInteractable && (selectedUnitId === unit.id || (!selectedUnitId && hoveredUnitId === unit.id)) && (
+                                                {(selectedUnitId === unit.id || (!selectedUnitId && hoveredUnitId === unit.id)) && (
                                                     <div style={{
                                                         position: 'absolute',
                                                         top: '100%',
@@ -1081,23 +1135,31 @@ const MainScreen = ({
                         {!contextMenu.isBackground ? (
                             <>
                                 {units.find(u => u.id === contextMenu.unitId)?.type !== 'label' && (
-                                    <div className="menu-item" onClick={() => handleMenuAction('edit')}>編集</div>
+                                    <div className="menu-item" onClick={() => handleMenuAction('edit')}>
+                                        {isSpectator ? '詳細を見る' : '編集'}
+                                    </div>
                                 )}
-                                {(!activeUnit || activeUnit.type === 'fleet') && (
-                                    <div className="menu-item" onClick={() => handleMenuAction('add_fleet')}>部隊を追加</div>
+                                {!isSpectator && (
+                                    <>
+                                        {(!activeUnit || activeUnit.type === 'fleet') && (
+                                            <div className="menu-item" onClick={() => handleMenuAction('add_fleet')}>部隊を追加</div>
+                                        )}
+                                        {(!activeUnit || activeUnit.type === 'fleet') && (
+                                            <div className="menu-item" onClick={() => handleMenuAction('split')}>部隊分割</div>
+                                        )}
+                                        <div className="menu-item" onClick={() => handleMenuAction('cut')}>切り取り</div>
+                                        <div className="menu-item" onClick={() => handleMenuAction('copy')}>コピー</div>
+                                        <hr style={{ margin: '2px 0' }} />
+                                        <div className="menu-item" onClick={() => handleMenuAction('delete')} style={{ color: 'red' }}>削除</div>
+                                    </>
                                 )}
-                                {(!activeUnit || activeUnit.type === 'fleet') && (
-                                    <div className="menu-item" onClick={() => handleMenuAction('split')}>部隊分割</div>
-                                )}
-                                <div className="menu-item" onClick={() => handleMenuAction('cut')}>切り取り</div>
-                                <div className="menu-item" onClick={() => handleMenuAction('copy')}>コピー</div>
-                                <hr style={{ margin: '2px 0' }} />
-                                <div className="menu-item" onClick={() => handleMenuAction('delete')} style={{ color: 'red' }}>削除</div>
                             </>
                         ) : (
-                            <div className={`menu-item ${!clipboard ? 'disabled' : ''}`} onClick={() => handleMenuAction('paste')}>
-                                貼り付け {clipboard ? `(${clipboard.type})` : ''}
-                            </div>
+                            !isSpectator && (
+                                <div className={`menu-item ${!clipboard ? 'disabled' : ''}`} onClick={() => handleMenuAction('paste')}>
+                                    貼り付け {clipboard ? `(${clipboard.type})` : ''}
+                                </div>
+                            )
                         )}
                     </div>
                 )
@@ -1178,10 +1240,15 @@ const MainScreen = ({
                                     const { source, target } = mergeCandidate;
                                     // Merge Logic
                                     const newFleets = [...(target.fleets || []), ...(source.fleets || [])];
-                                    const updatedTarget = { ...target, fleets: newFleets };
 
-                                    // Remove source, Update target
-                                    setUnits(units.filter(u => u.id !== source.id).map(u => u.id === target.id ? updatedTarget : u));
+                                    // Perform updates
+                                    // 1. Delete Source (from its layer)
+                                    deleteUnit(source.id);
+
+                                    // 2. Update Target (in its layer)
+                                    // We pass a function to ensure we capture latest state if needed, or just object patch
+                                    updateUnit(target.id, { fleets: newFleets });
+
                                     setMergeCandidate(null);
                                 }} style={{ background: '#007bff', color: 'white' }}>統合する</button>
                             </div>
@@ -1290,26 +1357,47 @@ const MainScreen = ({
                                                     style={{ cursor: 'pointer' }}
                                                 />
 
-                                                <span
-                                                    onClick={() => {
-                                                        setActiveLayerId(layer.id);
-                                                        // Optional: Auto-show on select?
-                                                        if (!layer.visible) handleToggleVisibility(layer.id);
-                                                    }}
-                                                    style={{
-                                                        cursor: 'pointer',
-                                                        fontWeight: activeLayerId === layer.id ? 'bold' : 'normal',
-                                                        flex: 1,
-                                                        color: activeLayerId === layer.id ? '#007bff' : 'inherit',
-                                                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
-                                                    }}
-                                                >
-                                                    {layer.name}
-                                                </span>
+                                                {editingLayerId === layer.id ? (
+                                                    <input
+                                                        autoFocus
+                                                        defaultValue={layer.name}
+                                                        onBlur={(e) => handleRenameLayer(layer.id, e.target.value)}
+                                                        onKeyDown={(e) => {
+                                                            if (e.key === 'Enter') handleRenameLayer(layer.id, e.currentTarget.value);
+                                                            if (e.key === 'Escape') setEditingLayerId(null);
+                                                        }}
+                                                        onClick={(e) => e.stopPropagation()} // Prevent selecting layer when clicking input
+                                                        style={{ flex: 1, padding: '2px 4px' }}
+                                                    />
+                                                ) : (
+                                                    <span
+                                                        onClick={() => {
+                                                            setActiveLayerId(layer.id);
+                                                            if (!layer.visible) handleToggleVisibility(layer.id);
+                                                        }}
+                                                        onDoubleClick={() => !isSpectator && setEditingLayerId(layer.id)}
+                                                        style={{
+                                                            cursor: 'pointer',
+                                                            fontWeight: activeLayerId === layer.id ? 'bold' : 'normal',
+                                                            flex: 1,
+                                                            color: activeLayerId === layer.id ? '#007bff' : 'inherit',
+                                                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
+                                                        }}
+                                                    >
+                                                        {layer.name}
+                                                    </span>
+                                                )}
 
                                                 <div style={{ display: 'flex', gap: '5px', justifyContent: 'flex-end', alignItems: 'center' }}>
                                                     {!isSpectator && (
                                                         <>
+                                                            <button
+                                                                onClick={() => setEditingLayerId(layer.id)}
+                                                                title="名前を変更"
+                                                                style={{ fontSize: '0.7em', color: '#333', border: '1px solid #ccc', background: 'white', cursor: 'pointer', marginRight: '2px' }}
+                                                            >
+                                                                名
+                                                            </button>
                                                             <button
                                                                 onClick={() => handleDuplicateLayer(layer.id)}
                                                                 title="レイヤーを複製"

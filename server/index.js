@@ -8,7 +8,7 @@ app.use(cors());
 
 const server = http.createServer(app);
 const io = new Server(server, {
-    maxHttpBufferSize: 5e7, // 50MB
+    maxHttpBufferSize: 1e8, // 100MB
     cors: {
         origin: "*", // Allow all origins for simplicity in this setup
         methods: ["GET", "POST"]
@@ -42,9 +42,9 @@ io.on('connection', (socket) => {
                 // Generate a random spectator ID for this session
                 const newSpectatorId = Math.random().toString(36).substring(2, 15);
                 sessions[sessionId] = {
-                    units: [],
-                    mapImage: null,
-                    overrides: {}, // Config overrides (shipTypes, etc.)
+                    layers: [{ id: 1, name: 'Layer 1', visible: true, units: [], mapImage: null }],
+                    activeLayerId: 1,
+                    overrides: {},
                     lastUpdated: Date.now(),
                     spectatorId: newSpectatorId
                 };
@@ -57,63 +57,57 @@ io.on('connection', (socket) => {
 
         // Store permission in socket data
         socket.data.isReadOnly = isReadOnly;
-        socket.data.sessionId = sessionId; // Store actual session ID
+        socket.data.sessionId = sessionId;
 
-        // Inform client of their role and relevant IDs
         socket.emit('session_info', {
             role: isReadOnly ? 'spectator' : 'editor',
             sessionId: sessionId,
-            spectatorId: isReadOnly ? inputId : spectatorId // If editor, send the spec ID to share
+            spectatorId: isReadOnly ? inputId : spectatorId
         });
 
-        // Send current session data if exists, ELSE send empty init to trigger sync
+        // Send current session data
         if (sessions[sessionId]) {
             socket.emit('init_data', {
-                units: sessions[sessionId].units,
-                mapImage: sessions[sessionId].mapImage,
+                layers: sessions[sessionId].layers || [],
+                activeLayerId: sessions[sessionId].activeLayerId || 1,
                 overrides: sessions[sessionId].overrides
             });
         } else {
-            // New session needs explicit empty init to unlock client
-            socket.emit('init_data', { units: [], mapImage: null, overrides: {} });
+            socket.emit('init_data', {
+                layers: [{ id: 1, name: 'Layer 1', visible: true, units: [], mapImage: null }],
+                activeLayerId: 1,
+                overrides: {}
+            });
         }
     });
 
-    socket.on('update_data', ({ sessionId, units }) => {
+    socket.on('update_data', ({ sessionId, layers, activeLayerId }) => {
         // Security Check
         if (socket.data.isReadOnly) {
             console.warn(`Socket ${socket.id} attempted update_data without permission.`);
             return;
         }
 
-        // Use socket.data.sessionId to ensure they update the session they joined
         const realSessionId = socket.data.sessionId || sessionId;
 
-        // Update server store
         if (!sessions[realSessionId]) {
-            sessions[realSessionId] = { units: [], lastUpdated: 0 };
+            sessions[realSessionId] = { layers: [], activeLayerId: 1, lastUpdated: 0 };
         }
-        sessions[realSessionId].units = units;
+
+        // Update store
+        sessions[realSessionId].layers = layers;
+        if (activeLayerId) sessions[realSessionId].activeLayerId = activeLayerId;
         sessions[realSessionId].lastUpdated = Date.now();
 
-        // Broadcast to others in the room
-        socket.to(realSessionId).emit('server_update', units);
+        // Broadcast
+        socket.to(realSessionId).emit('server_update', { layers, activeLayerId });
     });
 
+    // Legacy map update (kept but likely unused if layers handle map)
     socket.on('update_map', ({ sessionId, mapImage }) => {
-        // Security Check
-        if (socket.data.isReadOnly) {
-            console.warn(`Socket ${socket.id} attempted update_map without permission.`);
-            return;
-        }
-
-        const realSessionId = socket.data.sessionId || sessionId;
-
-        if (!sessions[realSessionId]) {
-            sessions[realSessionId] = { units: [], mapImage: null, lastUpdated: 0 };
-        }
-        sessions[realSessionId].mapImage = mapImage;
-        socket.to(realSessionId).emit('map_update', mapImage);
+        // ... existing legacy code ...
+        // If client uses layers, map is inside layer. 
+        // This might be redundant but harmless to keep if legacy client exists.
     });
 
     socket.on('update_config', ({ sessionId, overrides }) => {

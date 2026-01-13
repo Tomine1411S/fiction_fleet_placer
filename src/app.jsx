@@ -7,6 +7,7 @@ import { saveProject, loadProject, generateStatusReport } from './utils/fileSyst
 import FleetSplitScreen from './components/FleetSplitScreen';
 import { loadCSV } from './utils/csvLoader';
 import { io } from 'socket.io-client';
+import { fileToBase64 } from './utils/fileUtils';
 import './app.css'; // スタイル定義が必要
 
 function App() {
@@ -22,7 +23,7 @@ function App() {
     const [activeLayerId, setActiveLayerId] = useState(1);
 
     // Derived State for backward compatibility / child props
-    const activeLayer = layers.find(l => l.id === activeLayerId) || layers[0];
+    const activeLayer = layers.find(l => l.id === activeLayerId) || layers[0] || { units: [], id: 1, visible: true, name: 'Fallback Layer' };
     const units = activeLayer.units;
     const setUnits = (newUnits) => {
         setLayers(prev => prev.map(l => l.id === activeLayerId ? { ...l, units: newUnits } : l));
@@ -122,7 +123,7 @@ function App() {
                 } else if (data.layers) {
                     // New Layered Data
                     isRemoteUpdate.current = true;
-                    setLayers(data.layers);
+                    setLayers((data.layers && data.layers.length > 0) ? data.layers : [{ id: 1, name: 'Layer 1', visible: true, units: [], mapImage: null }]);
                     if (data.activeLayerId) setActiveLayerId(data.activeLayerId);
                 } else {
                     // Object { units, mapImage } -> Layer 1
@@ -172,6 +173,7 @@ function App() {
                 if (overrides.shipTypes) setShipTypes(overrides.shipTypes);
                 if (overrides.shipClasses) setShipClasses(overrides.shipClasses);
                 if (overrides.fleetTypes) setFleetTypes(overrides.fleetTypes);
+                if (overrides.appSettings) setAppSettings(prev => ({ ...prev, ...overrides.appSettings }));
                 console.log("Config synced from server");
             }
         });
@@ -258,7 +260,23 @@ function App() {
 
     useEffect(() => {
         localStorage.setItem('restia_app_settings', JSON.stringify(appSettings));
-    }, [appSettings]);
+
+        // Sync to server if host
+        if (socket && sessionId && !isSpectator && isServerSynced) {
+            // We debounce or just send? Settings change is rare, just send.
+            // But we need to be careful not to loop if we receive update?
+            // "config_update" handler sets state -> triggers this effect?
+            // Yes. We need a way to distinguish.
+            // However, config_update usually comes from OTHER clients (spectators don't send).
+            // Host sends. Spectator receives. Spectator sets state -> triggers effect.
+            // Spectator check is already here (if (!isSpectator)). Good.
+            // Host sets state -> triggers effect -> Host sends. OK.
+            // What if Host receives config_update? (from another Host/Editor?)
+            // If multiple editors, yes loop is risk. But usually single host.
+            // Let's rely on !isSpectator check for now assuming single host.
+            socket.emit('update_config', { sessionId, overrides: { appSettings } });
+        }
+    }, [appSettings, socket, sessionId, isSpectator, isServerSynced]);
 
     // ファイル操作ハンドラ
     const handleFileUpload = async (e) => {
@@ -310,9 +328,13 @@ function App() {
         } else if (file.type.startsWith('image/')) {
             // Updated behavior: Ask layer? or default to active.
             // MainScreen will handle specific uploads, but this is global handler.
-            // Let's assume this updates Active Layer.
-            const url = URL.createObjectURL(file);
-            setLayers(prev => prev.map(l => l.id === activeLayerId ? { ...l, mapImage: url, mapImageBlob: file } : l));
+            // Let's assume this updates Active Layer and we MUST use Base64 for sync.
+            try {
+                const base64 = await fileToBase64(file);
+                setLayers(prev => prev.map(l => l.id === activeLayerId ? { ...l, mapImage: base64, mapImageBlob: file } : l));
+            } catch (err) {
+                console.error("Image conversion failed", err);
+            }
         }
     };
 
