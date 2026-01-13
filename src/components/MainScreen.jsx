@@ -12,17 +12,9 @@ const MainScreen = ({
     // Computed: Active Layer
     const activeLayer = layers.find(l => l.id === activeLayerId) || layers[0] || { units: [], id: 1 };
 
-    // Background Fallback Logic
-    // Find the highest layer <= activeLayerId that has an image
-    // Background Fallback Logic
-    // Find the LAST visible layer that has an image (Render Order: Last = Top)
-    const effectiveMapImageVal = (() => {
-        const visibleLayers = layers.filter(l => l.visible);
-        // Reverse to find the last one (top-most) first
-        const topMostWithImage = [...visibleLayers].reverse().find(l => l.mapImage);
-        return topMostWithImage ? topMostWithImage.mapImage : null;
-    })();
-    const currentMapImage = effectiveMapImageVal || propMapImage; // Fallback to prop if any
+    // Map Image Logic
+    // We render ALL layer images that are visible, stacked by z-index.
+    // This circumvents browser issues with rapid src swapping and provides instant toggling.
 
     const [hoveredUnitId, setHoveredUnitId] = useState(null);
     const [contextMenu, setContextMenu] = useState({ visible: false, x: 0, y: 0, unitId: null, isBackground: false });
@@ -382,13 +374,14 @@ const MainScreen = ({
     };
 
     // Automatically center/fit map on image load
+    // Disabled to prevent jarring jumps when toggling layers
+    /*
     useEffect(() => {
         if (mapImgRef.current && currentMapImage) {
-            // Reset position on new map load?
-            // Maybe just center it.
             setPosition({ x: 0, y: 0 });
         }
     }, [currentMapImage]);
+    */
 
     // --- Context Menu Handlers ---
 
@@ -844,23 +837,27 @@ const MainScreen = ({
                         width: '100%', height: '100%',
                         position: 'absolute'
                     }}>
-                        {currentMapImage && (
-                            <img
-                                ref={mapImgRef}
-                                src={currentMapImage}
-                                alt="Map"
-                                style={{
-                                    position: 'absolute', top: 0, left: 0,
-                                    zIndex: 0, // Background at back
-                                    pointerEvents: 'none',
-                                    userSelect: 'none',
-                                    WebkitUserDrag: 'none'
-                                    // user wants to align coords to pixels? 
-                                    // Default img displays at natural size if no width/height constraint is strict on the img tag itself inside absolute
-                                    // We let it follow its natural size so coordinates map 1:1 to pixels
-                                }}
-                            />
-                        )}
+                        {/* Map Images Layer (Stacked) */}
+                        {layers.map((layer, index) => {
+                            if (!layer.mapImage) return null;
+                            // Requirement: "Active layers... hidden in map" handled by display: none
+                            // Stack order: index (same as layers array order). Last is top.
+                            return (
+                                <img
+                                    key={`map-layer-${layer.id}`}
+                                    src={layer.mapImage}
+                                    alt={`Map ${layer.name}`}
+                                    style={{
+                                        position: 'absolute', top: 0, left: 0,
+                                        zIndex: index, // Stack based on layer order
+                                        display: layer.visible ? 'block' : 'none', // Toggle visibility without unloading
+                                        pointerEvents: 'none',
+                                        userSelect: 'none',
+                                        WebkitUserDrag: 'none'
+                                    }}
+                                />
+                            );
+                        })}
 
                         {/* Map Lines SVG Layer */}
                         <svg style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', overflow: 'visible', pointerEvents: 'none', zIndex: 50 }}>
