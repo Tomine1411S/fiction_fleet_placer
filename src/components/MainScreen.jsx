@@ -1049,12 +1049,24 @@ const MainScreen = ({
                                                             const typeCode = match ? match[2] : null;
                                                             return (
                                                                 <React.Fragment key={fi}>
-                                                                    <div style={{ display: 'flex', justifyContent: 'center', minWidth: '1.2em' }}>
+                                                                    <div style={{
+                                                                        display: 'flex',
+                                                                        justifyContent: 'center',
+                                                                        alignItems: 'center',
+                                                                        width: '1.4em',
+                                                                        height: '1.4em',
+                                                                        overflow: 'hidden'
+                                                                    }}>
                                                                         {typeCode && (
                                                                             <img
                                                                                 src={`/assets/ships/${typeCode}.png`}
                                                                                 alt=""
-                                                                                style={{ height: '1.2em', verticalAlign: 'middle' }}
+                                                                                style={{
+                                                                                    maxWidth: '100%',
+                                                                                    maxHeight: '100%',
+                                                                                    objectFit: 'contain',
+                                                                                    verticalAlign: 'middle'
+                                                                                }}
                                                                                 onError={(e) => e.target.style.display = 'none'}
                                                                             />
                                                                         )}
