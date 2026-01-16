@@ -44,6 +44,14 @@ const MainScreen = ({
     // Layer Renaming
     const [editingLayerId, setEditingLayerId] = useState(null);
 
+    // Layer Image Drag State
+    const [isDraggingLayerImage, setIsDraggingLayerImage] = useState(false); // Mode
+    const [isImageDragActive, setIsImageDragActive] = useState(false); // Action
+
+    const updateLayerImage = (layerId, updates) => {
+        setLayers(layers.map(l => l.id === layerId ? { ...l, ...updates } : l));
+    };
+
     const handleRenameLayer = (layerId, newName) => {
         setLayers(layers.map(l => l.id === layerId ? { ...l, name: newName } : l));
         setEditingLayerId(null);
@@ -58,7 +66,18 @@ const MainScreen = ({
             return;
         }
         const newId = Math.max(...layers.map(l => l.id)) + 1;
-        setLayers([...layers, { id: newId, name: `Layer ${newId}`, visible: true, units: [], mapImage: null }]);
+        setLayers([...layers, {
+            id: newId,
+            name: `Layer ${newId}`,
+            visible: true,
+            units: [],
+            mapImage: null,
+            mapImageX: 0,
+            mapImageY: 0,
+            mapImageScale: 1,
+            mapImageRotation: 0,
+            mapImageOpacity: 1
+        }]);
         setActiveLayerId(newId);
     };
 
@@ -140,7 +159,13 @@ const MainScreen = ({
             id: newLayerId,
             name: `${targetLayer.name} (Copy)`,
             units: newUnits,
-            visible: true
+            visible: true,
+            // Copy image props
+            mapImageX: targetLayer.mapImageX || 0,
+            mapImageY: targetLayer.mapImageY || 0,
+            mapImageScale: targetLayer.mapImageScale || 1,
+            mapImageRotation: targetLayer.mapImageRotation || 0,
+            mapImageOpacity: targetLayer.mapImageOpacity ?? 1
             // mapImage/mapImageBlob are copied. 
             // Note: If mapImage is a Blob URL, it might be valid but double check lifecycle. 
             // For simple usage, copying the string URL is fine so long as blob exists.
@@ -161,7 +186,13 @@ const MainScreen = ({
         if (uploadImageFile && uploadTargetLayerId) {
             try {
                 const base64 = await fileToBase64(uploadImageFile);
-                setLayers(layers.map(l => l.id === uploadTargetLayerId ? { ...l, mapImage: base64, mapImageBlob: uploadImageFile } : l));
+                setLayers(layers.map(l => l.id === uploadTargetLayerId ? {
+                    ...l,
+                    mapImage: base64,
+                    mapImageBlob: uploadImageFile,
+                    // Reset Transforms
+                    mapImageX: 0, mapImageY: 0, mapImageScale: 1, mapImageRotation: 0, mapImageOpacity: 1
+                } : l));
                 setShowImageUploadModal(false);
                 setUploadImageFile(null);
             } catch (e) {
@@ -353,7 +384,13 @@ const MainScreen = ({
 
     const handleMouseDown = (e) => {
         // Space key or Middle click for pan
-        if (e.button === 1 || (e.button === 0 && e.nativeEvent.getModifierState('Space'))) { // Middle click or Space+Left
+        if (isDraggingLayerImage && activeLayer.mapImage) {
+            // Dragging Layer Image
+            e.preventDefault();
+            setIsImageDragActive(true);
+            setLastMousePos({ x: e.clientX, y: e.clientY });
+            // Do NOT set isDraggingMap
+        } else if (e.button === 1 || (e.button === 0 && e.nativeEvent.getModifierState('Space'))) { // Middle click or Space+Left
             e.preventDefault();
             setIsDraggingMap(true);
             setLastMousePos({ x: e.clientX, y: e.clientY });
@@ -361,7 +398,18 @@ const MainScreen = ({
     };
 
     const handleMouseMove = (e) => {
-        if (isDraggingMap) {
+        if (isDraggingLayerImage && isImageDragActive && activeLayer.mapImage) {
+            const dx = (e.clientX - lastMousePos.x) / scale; // Adjust for map zoom
+            const dy = (e.clientY - lastMousePos.y) / scale;
+
+            // Adjust X/Y based on rotation? Complex.
+            // Simple visual move: just add to x/y.
+            updateLayerImage(activeLayerId, {
+                mapImageX: (activeLayer.mapImageX || 0) + dx,
+                mapImageY: (activeLayer.mapImageY || 0) + dy
+            });
+            setLastMousePos({ x: e.clientX, y: e.clientY });
+        } else if (isDraggingMap) {
             const dx = e.clientX - lastMousePos.x;
             const dy = e.clientY - lastMousePos.y;
             setPosition({ x: position.x + dx, y: position.y + dy });
@@ -371,6 +419,7 @@ const MainScreen = ({
 
     const handleMouseUp = () => {
         setIsDraggingMap(false);
+        setIsImageDragActive(false);
     };
 
     // Automatically center/fit map on image load
@@ -781,6 +830,71 @@ const MainScreen = ({
                 ) : (
                     <div style={{ color: '#666' }}>要素を選択してください</div>
                 )}
+
+                {/* Layer Image Controls (Shown when no unit selected but active layer has image) */}
+                {(!activeUnit && activeLayer.mapImage) && (
+                    <div style={{ marginTop: '20px', paddingTop: '20px', borderTop: '1px solid #ddd' }}>
+                        <h4 style={{ margin: '5px 0' }}>レイヤー画像設定</h4>
+                        <div style={{ marginBottom: '10px' }}>
+                            <label style={{
+                                display: 'block', padding: '8px', background: isDraggingLayerImage ? '#cce5ff' : '#eee',
+                                border: '1px solid #ccc', borderRadius: '4px', cursor: 'pointer', textAlign: 'center'
+                            }}>
+                                <input
+                                    type="checkbox"
+                                    checked={isDraggingLayerImage}
+                                    onChange={(e) => setIsDraggingLayerImage(e.target.checked)}
+                                    style={{ display: 'none' }}
+                                />
+                                {isDraggingLayerImage ? '✋ 画像移動中 (OFFにする)' : '✋ 画像を移動 (ONにする)'}
+                            </label>
+                            <div style={{ fontSize: '0.8em', color: '#666', marginTop: '2px' }}>
+                                ※ダブルクリックで終了
+                            </div>
+                        </div>
+
+                        <div style={{ marginBottom: '10px' }}>
+                            <label>サイズ (倍率): {Math.round((activeLayer.mapImageScale || 1) * 100)}%</label>
+                            <input
+                                type="range" min="0.1" max="5.0" step="0.05"
+                                value={activeLayer.mapImageScale || 1}
+                                onChange={(e) => updateLayerImage(activeLayer.id, { mapImageScale: parseFloat(e.target.value) })}
+                                disabled={isSpectator}
+                                style={{ width: '100%' }}
+                            />
+                        </div>
+
+                        <div style={{ marginBottom: '10px' }}>
+                            <label>回転: {activeLayer.mapImageRotation || 0}°</label>
+                            <input
+                                type="range" min="0" max="360"
+                                value={activeLayer.mapImageRotation || 0}
+                                onChange={(e) => updateLayerImage(activeLayer.id, { mapImageRotation: parseInt(e.target.value) })}
+                                disabled={isSpectator}
+                                style={{ width: '100%' }}
+                            />
+                        </div>
+
+                        <div style={{ marginBottom: '10px' }}>
+                            <label>不透明度: {Math.round((activeLayer.mapImageOpacity ?? 1) * 100)}%</label>
+                            <input
+                                type="range" min="0" max="1" step="0.05"
+                                value={activeLayer.mapImageOpacity ?? 1}
+                                onChange={(e) => updateLayerImage(activeLayer.id, { mapImageOpacity: parseFloat(e.target.value) })}
+                                disabled={isSpectator}
+                                style={{ width: '100%' }}
+                            />
+                        </div>
+
+                        {!isSpectator && (
+                            <button className="btn" style={{ width: '100%', marginTop: '5px' }} onClick={() => updateLayerImage(activeLayer.id, {
+                                mapImageX: 0, mapImageY: 0, mapImageScale: 1, mapImageRotation: 0, mapImageOpacity: 1
+                            })}>
+                                リセット
+                            </button>
+                        )}
+                    </div>
+                )}
             </div>
 
             {/* Main Area */}
@@ -836,14 +950,18 @@ const MainScreen = ({
                     onMouseMove={handleMouseMove}
                     onMouseUp={handleMouseUp}
                     onMouseLeave={handleMouseUp}
+                    onDoubleClick={() => {
+                        if (isDraggingLayerImage) setIsDraggingLayerImage(false);
+                    }}
                     onClick={(e) => {
-                        if (!isDraggingMap) setSelectedUnitId(null);
+                        if (!isDraggingMap && !isDraggingLayerImage) setSelectedUnitId(null);
                         closeContextMenu();
                         setShowShapeMenu(false);
                     }}
                     style={{
                         position: 'relative', width: '100%', height: '100%',
-                        overflow: 'hidden', backgroundColor: '#e0e0e0', cursor: isDraggingMap ? 'grabbing' : 'default'
+                        overflow: 'hidden', backgroundColor: '#e0e0e0',
+                        cursor: isDraggingMap ? 'grabbing' : (isDraggingLayerImage ? 'move' : 'default')
                     }}
                 >
                     {/* Transformed Layer */}
@@ -869,7 +987,10 @@ const MainScreen = ({
                                         display: layer.visible ? 'block' : 'none', // Toggle visibility without unloading
                                         pointerEvents: 'none',
                                         userSelect: 'none',
-                                        WebkitUserDrag: 'none'
+                                        WebkitUserDrag: 'none',
+                                        transformOrigin: '0 0',
+                                        transform: `translate(${layer.mapImageX || 0}px, ${layer.mapImageY || 0}px) rotate(${layer.mapImageRotation || 0}deg) scale(${layer.mapImageScale || 1})`,
+                                        opacity: layer.mapImageOpacity ?? 1
                                     }}
                                 />
                             );
@@ -1441,7 +1562,12 @@ const MainScreen = ({
                                                                 const f = e.target.files[0];
                                                                 if (f) {
                                                                     const url = URL.createObjectURL(f);
-                                                                    setLayers(prev => prev.map(l => l.id === layer.id ? { ...l, mapImage: url, mapImageBlob: f } : l));
+                                                                    setLayers(prev => prev.map(l => l.id === layer.id ? {
+                                                                        ...l,
+                                                                        mapImage: url,
+                                                                        mapImageBlob: f,
+                                                                        mapImageX: 0, mapImageY: 0, mapImageScale: 1, mapImageRotation: 0, mapImageOpacity: 1
+                                                                    } : l));
                                                                 }
                                                             }} />
                                                         </label>
@@ -1452,8 +1578,10 @@ const MainScreen = ({
                                     </div>
                                 );
                             })}
+
+                            {/* Layer Image Settings in Panel? Or Sidebar? Plan said Sidebar. */}
                         </div>
-                    </div>
+                    </div >
                 )
             }
         </div >
