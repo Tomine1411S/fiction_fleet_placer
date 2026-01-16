@@ -15,15 +15,32 @@ export const loadProject = async (file) => {
     const zip = await JSZip.loadAsync(file);
     const data = {
         layers: [],
+        fleets: {}, // New Global Fleet Store
         overrides: {}
     };
 
     // 1. Check for New Format (layers.json)
     const layersFile = zip.file("layers.json");
+    const fleetsFile = zip.file("fleets.json");
+
     if (layersFile) {
         try {
             const layersJson = await layersFile.async("string");
             data.layers = JSON.parse(layersJson);
+
+            if (fleetsFile) {
+                const fleetsJson = await fleetsFile.async("string");
+                data.fleets = JSON.parse(fleetsJson);
+            } else {
+                // Fallback: If layers.json exists but fleets.json is missing, 
+                // check if fleets are still embedded (Intermediate state) or empty.
+                // We will run migration just in case fleets are embedded in layers.
+                const { layers, fleets } = migrateFleetsFromLayers(data.layers);
+                data.layers = layers;
+                if (Object.keys(fleets).length > 0) data.fleets = fleets;
+            }
+
+            // Load Map Images for each layer
 
             // Load Map Images for each layer
             for (const layer of data.layers) {
@@ -57,7 +74,7 @@ export const loadProject = async (file) => {
             mapImageBlob = blob;
         }
 
-        data.layers = [{
+        const initialLayers = [{
             id: 1,
             name: "Layer 1",
             visible: true,
@@ -65,6 +82,11 @@ export const loadProject = async (file) => {
             mapImage: mapImage,
             mapImageBlob: mapImageBlob
         }];
+
+        // Migrate embedded fleets to global store
+        const { layers, fleets } = migrateFleetsFromLayers(initialLayers);
+        data.layers = layers;
+        data.fleets = fleets;
     }
 
     // 3. Load Config Overrides
@@ -284,6 +306,11 @@ export const saveProject = async (state) => {
 
     zip.file("layers.json", JSON.stringify(layersToSave, null, 2));
 
+    // Save Fleets
+    if (state.fleets) {
+        zip.file("fleets.json", JSON.stringify(state.fleets, null, 2));
+    }
+
     // Save Map Images
     for (const layer of (state.layers || [])) {
         if (layer.mapImageBlob) {
@@ -313,7 +340,40 @@ export const saveProject = async (state) => {
     saveAs(content, "deployment_v2.zip");
 };
 
-export const generateStatusReport = (layers) => {
+// Helper to migrate Fleets from Layer Units to Global Store
+const migrateFleetsFromLayers = (layers) => {
+    const newLayers = [];
+    const globalFleets = {};
+
+    layers.forEach(layer => {
+        const newUnits = (layer.units || []).map(unit => {
+            if (unit.fleets && unit.fleets.length > 0) {
+                const fleetIds = [];
+                unit.fleets.forEach(startFleet => {
+                    // Ensure ID
+                    if (!startFleet.id) startFleet.id = Date.now() + Math.random();
+
+                    // Add to global store
+                    globalFleets[startFleet.id] = startFleet;
+                    fleetIds.push(startFleet.id);
+                });
+
+                // Return unit with fleetIds instead of fleets objects
+                // We keep 'fleets' property undefined or remove it to avoid confusion?
+                // Better to remove it, but let's just omit it from new object.
+                const { fleets, ...rest } = unit;
+                return { ...rest, fleetIds };
+            }
+            return unit;
+        });
+        newLayers.push({ ...layer, units: newUnits });
+    });
+
+    return { layers: newLayers, fleets: globalFleets };
+};
+
+export const generateStatusReport = (layers, fleets = {}) => {
+    // fleets arg added for lookup
     // If passed flat units (legacy call), wrap
     const targetLayers = Array.isArray(layers) && !layers[0]?.units ? [{ name: 'Default', units: layers }] : layers;
 
@@ -325,7 +385,19 @@ export const generateStatusReport = (layers) => {
         const layerHeader = `=== ${layer.name} ===`;
         const unitTexts = validUnits.map(pin => {
             const header = `Point: (${pin.x}, ${pin.y})`;
-            const fleetTexts = (pin.fleets || []).map(f => {
+
+            // Resolve fleets
+            const pinFleets = [];
+            if (pin.fleetIds) {
+                pin.fleetIds.forEach(fid => {
+                    if (fleets[fid]) pinFleets.push(fleets[fid]);
+                });
+            } else if (pin.fleets) {
+                // Fallback for non-migrated runtime objects?
+                pinFleets.push(...pin.fleets);
+            }
+
+            const fleetTexts = pinFleets.map(f => {
                 const ships = (f.ships || []).map(s => `  - ${formatShipString(s)}`).join('\n');
                 return `Unit: ${f.code} (${f.name})\n${ships}`;
             }).join('\n\n');

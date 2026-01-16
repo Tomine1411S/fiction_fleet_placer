@@ -387,6 +387,74 @@ const SettingsScreen = ({
                         </span>
                     </label>
                 </div>
+
+                <div style={{ marginTop: '20px', borderTop: '1px solid #eee', paddingTop: '10px' }}>
+                    <h4 style={{ margin: '0 0 10px 0' }}>子レイヤー作成時の部隊配置 (Child Layer Creation)</h4>
+                    <div style={{ display: 'flex', gap: '20px' }}>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '5px', cursor: 'pointer' }}>
+                            <input
+                                type="radio"
+                                name="childPlacementMode"
+                                checked={(appSettings?.childPlacementMode || 'split') === 'split'}
+                                onChange={() => setAppSettings({ ...appSettings, childPlacementMode: 'split' })}
+                            />
+                            <span>
+                                <strong>艦隊単位で分割 (Split)</strong>
+                                <div style={{ fontSize: '0.8em', color: '#666' }}>
+                                    複合ピンを展開して個別に配置します。
+                                </div>
+                            </span>
+                        </label>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '5px', cursor: 'pointer' }}>
+                            <input
+                                type="radio"
+                                name="childPlacementMode"
+                                checked={appSettings?.childPlacementMode === 'grouped'}
+                                onChange={() => setAppSettings({ ...appSettings, childPlacementMode: 'grouped' })}
+                            />
+                            <span>
+                                <strong>構成を維持 (Grouped)</strong>
+                                <div style={{ fontSize: '0.8em', color: '#666' }}>
+                                    親レイヤーのピン構成を維持します。
+                                </div>
+                            </span>
+                        </label>
+                    </div>
+                </div>
+
+                <div style={{ marginTop: '20px', borderTop: '1px solid #eee', paddingTop: '10px' }}>
+                    <h4 style={{ margin: '0 0 10px 0' }}>リンクピンの表示形式 (Link Pin Tooltip)</h4>
+                    <div style={{ display: 'flex', gap: '20px' }}>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '5px', cursor: 'pointer' }}>
+                            <input
+                                type="radio"
+                                name="linkPinTooltipMode"
+                                checked={(appSettings?.linkPinTooltipMode || 'flat') === 'flat'}
+                                onChange={() => setAppSettings({ ...appSettings, linkPinTooltipMode: 'flat' })}
+                            />
+                            <span>
+                                <strong>艦隊一覧 (Flat)</strong>
+                                <div style={{ fontSize: '0.8em', color: '#666' }}>
+                                    子レイヤー内の全艦隊をリスト表示します。
+                                </div>
+                            </span>
+                        </label>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '5px', cursor: 'pointer' }}>
+                            <input
+                                type="radio"
+                                name="linkPinTooltipMode"
+                                checked={appSettings?.linkPinTooltipMode === 'grouped'}
+                                onChange={() => setAppSettings({ ...appSettings, linkPinTooltipMode: 'grouped' })}
+                            />
+                            <span>
+                                <strong>ピン別 (Grouped)</strong>
+                                <div style={{ fontSize: '0.8em', color: '#666' }}>
+                                    子レイヤー内のピンごとにグループ化して表示します。
+                                </div>
+                            </span>
+                        </label>
+                    </div>
+                </div>
             </div>
         );
     };

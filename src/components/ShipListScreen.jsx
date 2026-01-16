@@ -1,15 +1,25 @@
 import React, { useMemo } from 'react';
 import { saveAs } from 'file-saver';
 
-const ShipListScreen = ({ units, setUnits, shipTypes, shipClasses, onSwitchScreen, onSelectUnit, isSpectator }) => {
+const ShipListScreen = ({ layers, fleets, setFleets, shipTypes, shipClasses, onSwitchScreen, onSelectUnit, isSpectator }) => {
 
     // 1. Flatten all ships from units -> fleets -> ships
+    // 1. Flatten all ships from all layers -> units -> fleets -> ships
     const allShips = useMemo(() => {
         const list = [];
-        units.forEach(unit => {
-            if (unit.fleets) {
-                unit.fleets.forEach((fleet, fIdx) => {
-                    if (fleet.ships) {
+
+        // Helper to get fleets
+        const resolveFleets = (unit) => {
+            if (unit.fleetIds) return unit.fleetIds.map(id => fleets[id]).filter(Boolean);
+            return unit.fleets || [];
+        };
+
+        (layers || []).forEach(layer => {
+            (layer.units || []).forEach(unit => {
+                const unitFleets = resolveFleets(unit);
+
+                unitFleets.forEach((fleet, fIdx) => {
+                    if (fleet && fleet.ships) {
                         fleet.ships.forEach((ship, sIdx) => {
                             if (ship.type && ship.classCode) {
                                 list.push({
@@ -17,6 +27,8 @@ const ShipListScreen = ({ units, setUnits, shipTypes, shipClasses, onSwitchScree
                                     fleetCode: fleet.code,
                                     fleetName: fleet.name,
                                     unitId: unit.id,
+                                    layerId: layer.id, // Track layer
+                                    fleetId: fleet.id, // Track fleet ID if check needed
                                     fleetIndex: fIdx,
                                     shipIndex: sIdx,
                                     // Helper for sorting/grouping
@@ -26,10 +38,10 @@ const ShipListScreen = ({ units, setUnits, shipTypes, shipClasses, onSwitchScree
                         });
                     }
                 });
-            }
+            });
         });
         return list;
-    }, [units]);
+    }, [layers, fleets]);
 
     // 2. Group by Type > Class
     const groupedShips = useMemo(() => {
@@ -75,8 +87,9 @@ const ShipListScreen = ({ units, setUnits, shipTypes, shipClasses, onSwitchScree
     };
 
     // 4. Random Numbering Logic
+    // 4. Random Numbering Logic
     const handleRandomNumbering = (shipsInClass) => {
-        if (!setUnits) return;
+        if (!setFleets) return;
 
         // Separate numbered and unnumbered
         const numberedShips = shipsInClass.filter(s => s.number && s.number.trim() !== "");
@@ -107,7 +120,6 @@ const ShipListScreen = ({ units, setUnits, shipTypes, shipClasses, onSwitchScree
         }
 
         // 3. Sort Unnumbered Ships (unitId -> fleetIndex -> shipIndex)
-        // Note: allShips generation order naturally follows this, but ensuring sort is safer
         unnumberedShips.sort((a, b) => {
             if (a.unitId !== b.unitId) return a.unitId - b.unitId;
             if (a.fleetIndex !== b.fleetIndex) return a.fleetIndex - b.fleetIndex;
@@ -115,32 +127,39 @@ const ShipListScreen = ({ units, setUnits, shipTypes, shipClasses, onSwitchScree
         });
 
         // 4. Assign Random Numbers
-        // We will assign to a cloned units structure
-        // Since units is state, we need deep copy or map
-        // To be efficient, we can serialize/deserialize or map
-        const newUnits = JSON.parse(JSON.stringify(units));
+        // We will modify fleets directly via setFleets
+        const newFleets = { ...fleets };
+        let hasChanges = false;
 
         unnumberedShips.forEach(target => {
-            if (candidates.length === 0) return; // Should not happen with current math
-            // Pick random index
-            const randIdx = Math.floor(Math.random() * candidates.length);
-            const assignedNum = candidates[randIdx];
+            if (candidates.length === 0) return;
 
-            // Remove from candidates
-            candidates.splice(randIdx, 1);
+            // Find target fleet by ID (preferred) or lookup
+            // shipsInClass items have 'fleetId' if we added it in step 1.
+            // Let's ensure we used fleetId in allShips or fallback
 
-            // Update in newUnits
-            // newUnits is an array of pins.
-            const unit = newUnits.find(u => u.id === target.unitId);
-            if (unit && unit.fleets && unit.fleets[target.fleetIndex]) {
-                const fleet = unit.fleets[target.fleetIndex];
-                if (fleet.ships && fleet.ships[target.shipIndex]) {
-                    fleet.ships[target.shipIndex].number = assignedNum.toString();
+            // If we have fleetId in target (added in step 1 replacement)
+            const targetFleetId = target.fleetId;
+
+            if (targetFleetId && newFleets[targetFleetId]) {
+                const randIdx = Math.floor(Math.random() * candidates.length);
+                const assignedNum = candidates[randIdx];
+                candidates.splice(randIdx, 1);
+
+                // Clone fleet and ships
+                const fleet = { ...newFleets[targetFleetId] };
+                const ships = [...(fleet.ships || [])];
+
+                if (ships[target.shipIndex]) {
+                    ships[target.shipIndex] = { ...ships[target.shipIndex], number: assignedNum.toString() };
+                    fleet.ships = ships;
+                    newFleets[targetFleetId] = fleet;
+                    hasChanges = true;
                 }
             }
         });
 
-        setUnits(newUnits);
+        if (hasChanges) setFleets(newFleets);
     };
 
 

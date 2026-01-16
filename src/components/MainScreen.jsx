@@ -1,14 +1,31 @@
 import React, { useState, useRef, useEffect } from 'react';
 import Draggable from 'react-draggable';
+
+const DraggableWithRef = ({ children, ...props }) => {
+    const nodeRef = React.useRef(null);
+    return (
+        <Draggable nodeRef={nodeRef} {...props}>
+            {React.cloneElement(React.Children.only(children), { ref: nodeRef })}
+        </Draggable>
+    );
+};
 import { saveAs } from 'file-saver';
 import { fileToBase64 } from '../utils/fileUtils';
+import { createChildLayer, isPointInBoundary, transformParentToChild } from '../utils/layerUtils';
 
 const MainScreen = ({
     layers = [], setLayers, activeLayerId, setActiveLayerId, // New Props
+    fleets = {}, setFleets, // New Global Fleet Store
     units = [], setUnits, mapImage: propMapImage, // Legacy/Compat props (units is activeLayer.units)
     onSwitchScreen, onOpenSettings, onOpenShipList, onFileUpload, onSaveZip, onDownloadReport, selectedUnitId, setSelectedUnitId, fleetTypes, isSpectator, sessionId, spectatorShareId, onOpenSplitScreen,
     appSettings // New Prop
 }) => {
+    // Helper to resolve fleets for a unit
+    const getUnitFleets = (unit) => {
+        if (!unit) return [];
+        if (unit.fleetIds) return unit.fleetIds.map(id => fleets[id]).filter(Boolean);
+        return unit.fleets || [];
+    };
     // Computed: Active Layer
     const activeLayer = layers.find(l => l.id === activeLayerId) || layers[0] || { units: [], id: 1 };
 
@@ -48,8 +65,48 @@ const MainScreen = ({
     const [isDraggingLayerImage, setIsDraggingLayerImage] = useState(false); // Mode
     const [isImageDragActive, setIsImageDragActive] = useState(false); // Action
 
+    // --- Child Layer Creation State ---
+    const [showParentSelectModal, setShowParentSelectModal] = useState(false);
+    const [boundaryMode, setBoundaryMode] = useState(false);
+    const [boundaryStart, setBoundaryStart] = useState(null);
+    const [tempBoundary, setTempBoundary] = useState(null); // { x, y, width, height, type: 'rect' }
+    const [targetParentId, setTargetParentId] = useState(null);
+
     const updateLayerImage = (layerId, updates) => {
         setLayers(layers.map(l => l.id === layerId ? { ...l, ...updates } : l));
+    };
+
+    // --- Dynamic Sync on Drag (Parent to Child) ---
+    const checkParentToChildDrop = (unit, newX, newY) => {
+        const childLayers = layers.filter(l => l.parentId === activeLayerId);
+        childLayers.forEach(child => {
+            if (child.boundary && isPointInBoundary(newX, newY, child.boundary)) {
+                // Synced!
+                const unitFleets = getUnitFleets(unit);
+                const fleetIds = unitFleets.map(f => f.id);
+
+                const alreadyExists = child.units.some(u =>
+                    (u.fleetIds && u.fleetIds.some(fid => fleetIds.includes(fid)))
+                );
+
+                if (!alreadyExists) {
+                    const { x: childX, y: childY } = transformParentToChild(newX, newY, child.boundary);
+                    const newChildUnit = {
+                        id: Date.now() + Math.random(),
+                        x: childX,
+                        y: childY,
+                        type: 'fleet',
+                        fleetIds: fleetIds
+                    };
+
+                    setLayers(prev => prev.map(l => l.id === child.id ? {
+                        ...l,
+                        units: [...l.units, newChildUnit]
+                    } : l));
+                    console.log(`Synced fleets to child layer ${child.name}`);
+                }
+            }
+        });
     };
 
     const handleRenameLayer = (layerId, newName) => {
@@ -65,12 +122,13 @@ const MainScreen = ({
             alert("これ以上レイヤーを追加できません (最大20)");
             return;
         }
-        const newId = Math.max(...layers.map(l => l.id)) + 1;
+        const newId = Math.max(...layers.map(l => l.id), 0) + 1;
         setLayers([...layers, {
             id: newId,
             name: `Layer ${newId}`,
             visible: true,
             units: [],
+            parentId: null,
             mapImage: null,
             mapImageX: 0,
             mapImageY: 0,
@@ -79,6 +137,60 @@ const MainScreen = ({
             mapImageOpacity: 1
         }]);
         setActiveLayerId(newId);
+    };
+
+    const handleInitChildLayerCreation = () => {
+        if (isSpectator) return;
+        setShowParentSelectModal(true);
+    };
+
+    const handleSelectParentLayer = (parentId) => {
+        setShowParentSelectModal(false);
+        setTargetParentId(parentId);
+        // Ensure parent is active so we can draw on it
+        setActiveLayerId(parentId);
+        setBoundaryMode(true);
+        alert("マップ上でドラッグして、子レイヤーの範囲（矩形）を指定してください。");
+    };
+
+    const handleConfirmBoundary = async (boundary) => {
+        setBoundaryMode(false);
+        setTempBoundary(null);
+        setBoundaryStart(null);
+
+        const parentLayer = layers.find(l => l.id === targetParentId);
+        if (!parentLayer) return;
+
+        try {
+            const newLayer = await createChildLayer(parentLayer, boundary, fleets, layers, appSettings?.childPlacementMode);
+
+            // Add Child Link Pin to Parent logic
+            const linkPin = {
+                id: Date.now() + 1,
+                x: boundary.x - boundary.width / 2, // Top-Left
+                y: boundary.y - boundary.height / 2, // Top-Left
+                type: 'child_link',
+                targetLayerId: newLayer.id,
+                // width: 50, height: 50, // Auto size or specific marker
+                color: '#00FFFF',
+                displayName: newLayer.name
+            };
+
+            // Update Parent with Link Pin
+            const updatedParent = {
+                ...parentLayer,
+                units: [...parentLayer.units, linkPin]
+            };
+
+            setLayers([...layers.map(l => l.id === parentLayer.id ? updatedParent : l), newLayer]);
+
+            // Switch to new Child Layer
+            setActiveLayerId(newLayer.id);
+            alert("子レイヤーを作成しました。");
+        } catch (e) {
+            console.error(e);
+            alert("作成に失敗しました: " + e.message);
+        }
     };
 
     const handleToggleVisibility = (id) => {
@@ -101,6 +213,31 @@ const MainScreen = ({
         }
     };
 
+    // --- Layer Hierarchy Helper ---
+    const getHierarchicalLayers = () => {
+        const roots = layers.filter(l => !l.parentId);
+        // Sort Roots: Reverse order of layers array (Top Z first)
+        roots.sort((a, b) => layers.indexOf(b) - layers.indexOf(a));
+
+        const buildTree = (nodes) => {
+            let list = [];
+            nodes.forEach(node => {
+                list.push({ ...node, depth: 0 });
+                // Find children
+                const children = layers.filter(l => l.parentId === node.id);
+                // Sort children (Top Z first)
+                children.sort((a, b) => layers.indexOf(b) - layers.indexOf(a));
+
+                if (children.length > 0) {
+                    const childNodes = buildTree(children);
+                    list = list.concat(childNodes.map(c => ({ ...c, depth: c.depth + 1 })));
+                }
+            });
+            return list;
+        };
+        return buildTree(roots);
+    };
+
     const handleLayerDragStart = (e, index) => {
         if (isSpectator) return;
         setDraggingLayerIdx(index);
@@ -112,7 +249,8 @@ const MainScreen = ({
         const ITEM_HEIGHT = 50; // Approximate height of a layer item
         const moveCount = Math.round(data.y / ITEM_HEIGHT);
         let newIdx = draggingLayerIdx + moveCount;
-        newIdx = Math.max(0, Math.min(newIdx, layers.length - 1));
+        const displayLayers = getHierarchicalLayers(); // Get current visual list
+        newIdx = Math.max(0, Math.min(newIdx, displayLayers.length - 1));
 
         if (newIdx !== placeholderLayerIdx) {
             setPlaceholderLayerIdx(newIdx);
@@ -123,10 +261,82 @@ const MainScreen = ({
         if (draggingLayerIdx === null) return;
 
         if (draggingLayerIdx !== placeholderLayerIdx) {
-            const newLayers = [...layers];
-            const [movedLayer] = newLayers.splice(draggingLayerIdx, 1);
-            newLayers.splice(placeholderLayerIdx, 0, movedLayer);
-            setLayers(newLayers);
+            const displayLayers = getHierarchicalLayers();
+            const movedLayer = displayLayers[draggingLayerIdx];
+            const targetVisualLayer = displayLayers[placeholderLayerIdx];
+
+            if (movedLayer && targetVisualLayer && movedLayer.id !== targetVisualLayer.id) {
+                // Determine insertion in 'layers' array (Z-order)
+                // Visual List Top = Layer Array End (Highest Index)
+                // Visual List Bottom = Layer Array Start (Lowest Index)
+                // So "Moving Down Visually" -> "Moving to Lower Array Index"
+
+                const currentLayers = [...layers];
+                // Remove moved layer
+                const filteredLayers = currentLayers.filter(l => l.id !== movedLayer.id);
+
+                // Find target index in the FILTERED array
+                let targetIndex = filteredLayers.findIndex(l => l.id === targetVisualLayer.id);
+
+                if (targetIndex !== -1) {
+                    // Logic:
+                    // If moving visually DOWN (placeholder > dragging), we want to be BELOW target visually.
+                    // Visual Order is reversed layers index. 
+                    // Below Visually = Lower Array Index?
+                    // Wait.
+                    // [B, A] (Visual). B is top. A is bottom.
+                    // Array: [A, B]. A=0, B=1.
+                    // Move B below A (Visual). [A, B] (Visual).
+                    // Target Visual: A.
+                    // We want B to be "Below" A visually? No, B is moved AFTER A visually.
+                    // Visual List: Index 0 is Top (Z-Max). Index N is Bottom (Z-Min).
+                    // DraggingIdx < PlaceholderIdx => Moving Down (Towards Bottom/Z-Min).
+                    // Target is at Z-Middle. We want to be Z-Lower than Target?
+                    // Yes. If I drop "Below" A, I want to be rendered "Under" A (or just after in list).
+                    // Actually, "Visual List" order is "Selection/Panel Order".
+                    // Does Panel Order Top = Front? Yes usually.
+
+                    // So Placeholder > Dragging (Moved Down) -> Insert at/before Target in Array? 
+                    // Let's assume Insert BEFORE Target in Array (Lower Index).
+                    // Placeholder < Dragging (Moved Up) -> Insert AFTER Target in Array (Higher Index).
+
+                    let insertionIndex = targetIndex; // Default: Replace (Insert at same index, shifting target up)
+
+                    if (placeholderLayerIdx > draggingLayerIdx) {
+                        // Moved Down Visually -> Z-Order Lower -> Lower Array Index.
+                        // Insert at targetIndex. (Target shifts to right/up? No, Target stays at index or becomes index+1?)
+                        // [A, C]. Target C(1). Insert B at 1 -> [A, B, C]. B(1) < C(2). B is below C visually?
+                        // Sort b-a: 2-1=+ (C first), 1-0=+ (B first). Visual: C, B, A.
+                        // If I move B down to A. Target A(0).
+                        // Insert at 0. [B, A, C]. B(0), A(1).
+                        // Visual: C, A, B.
+                        // Wait.
+                        // Let's stick to "Insert After" or "Insert Before" in Array.
+
+                        // IF moved visually DOWN (Index increases): We want to be "Behind" target?
+                        // Usually dropping "After" an item in a list means "Next Item".
+                        // In Z-Stack, "Next Item" = Lower Z? (If Top is first). Yes.
+                        // Lower Z = Lower Array Index.
+                        // So we want index <= Target Index.
+                        // filteredLayers[targetIndex] is the target.
+                        // If we insert at targetIndex, the previous content at targetIndex shifts to targetIndex+1.
+                        // New item takes targetIndex.
+                        // So New Item Index < Old Target Item Index (now +1).
+                        // New(X) < Target(X+1). So New is Below Target. Correct.
+                        // So: insertionIndex = targetIndex.
+                    } else {
+                        // Moved Up Visually -> Z-Order Higher -> Higher Array Index.
+                        // We want New Index > Target Index.
+                        // If we insert at targetIndex + 1.
+                        // [A]. Target A(0). Insert B at 1. [A, B].
+                        // B(1) > A(0). B Above A. Correct.
+                        insertionIndex = targetIndex + 1;
+                    }
+
+                    filteredLayers.splice(insertionIndex, 0, movedLayer);
+                    setLayers(filteredLayers);
+                }
+            }
         }
         setDraggingLayerIdx(null);
         setPlaceholderLayerIdx(null);
@@ -144,15 +354,35 @@ const MainScreen = ({
 
         const newLayerId = Math.max(...layers.map(l => l.id)) + 1;
 
-        // Deep clone units and regenerate IDs to avoid conflicts
+        // Clone units and fleets
+        // We want semantic copy: separate fleets.
+        const newFleetsMap = {};
+
         const newUnits = (targetLayer.units || []).map((u, i) => {
             // Basic clone
-            const unitClone = JSON.parse(JSON.stringify(u));
-            // Assign new ID. ensure uniqueness. 
-            // Using Date.now() might collide if fast loop, so add index offset/random
-            unitClone.id = Date.now() + i + Math.floor(Math.random() * 1000);
+            const unitClone = { ...u, id: Date.now() + i + Math.floor(Math.random() * 1000) };
+
+            // If unit has fleets, we need to clone them too
+            const sourceFleets = getUnitFleets(u);
+            const newFleetIds = [];
+
+            sourceFleets.forEach(f => {
+                const newFleetId = Date.now() + Math.random() + Math.random(); // Ensure unique
+                const newFleet = { ...f, id: newFleetId };
+                newFleetsMap[newFleetId] = newFleet;
+                newFleetIds.push(newFleetId);
+            });
+
+            if (newFleetIds.length > 0) {
+                unitClone.fleetIds = newFleetIds;
+                delete unitClone.fleets; // Ensure clean state
+            }
+
             return unitClone;
         });
+
+        // Update Fleets Store
+        setFleets(prev => ({ ...prev, ...newFleetsMap }));
 
         const newLayer = {
             ...targetLayer,
@@ -166,9 +396,6 @@ const MainScreen = ({
             mapImageScale: targetLayer.mapImageScale || 1,
             mapImageRotation: targetLayer.mapImageRotation || 0,
             mapImageOpacity: targetLayer.mapImageOpacity ?? 1
-            // mapImage/mapImageBlob are copied. 
-            // Note: If mapImage is a Blob URL, it might be valid but double check lifecycle. 
-            // For simple usage, copying the string URL is fine so long as blob exists.
         };
 
         const newLayers = [...layers, newLayer];
@@ -214,10 +441,13 @@ const MainScreen = ({
                 const layerUnits = layer.units || [];
                 layerUnits.forEach(unit => {
                     if (unit.type === 'fleet' || !unit.type) {
+                        // Resolve Fleets
+                        const unitFleets = getUnitFleets(unit);
+
                         // Pin Name
-                        const pinName = unit.displayName || (unit.fleets || []).map(f => f.code).join(' + ') || 'No Name';
+                        const pinName = unit.displayName || unitFleets.map(f => f.code).join(' + ') || 'No Name';
                         text += `・${pinName}\n`;
-                        (unit.fleets || []).forEach(fleet => {
+                        unitFleets.forEach(fleet => {
                             text += `　・${fleet.name || 'No Name'}\n`;
                             (fleet.ships || []).forEach((ship) => {
                                 const shipId = `${ship.type || ''}-${ship.classCode || ''}${ship.number || ''}`;
@@ -247,9 +477,10 @@ const MainScreen = ({
                 const layerUnits = layer.units || [];
                 layerUnits.forEach(unit => {
                     if (unit.type === 'fleet' || !unit.type) {
-                        const pinName = unit.displayName || (unit.fleets || []).map(f => f.code).join(' + ') || 'No Name';
+                        const unitFleets = getUnitFleets(unit);
+                        const pinName = unit.displayName || unitFleets.map(f => f.code).join(' + ') || 'No Name';
 
-                        (unit.fleets || []).forEach(fleet => {
+                        unitFleets.forEach(fleet => {
                             let fType = "";
                             if (fleet.code) {
                                 const match = fleet.code.match(/(\d+)([A-Z]+)Sq\./);
@@ -299,8 +530,10 @@ const MainScreen = ({
                 if (u.type && u.type !== 'fleet' && u.type !== 'label') return;
                 if (u.type === 'label' && u.text && u.text.toLowerCase().includes(lowerQuery)) match = true;
                 if (u.displayName && u.displayName.toLowerCase().includes(lowerQuery)) match = true;
-                if (u.fleets) {
-                    if (u.fleets.some(f => {
+
+                const uFleets = getUnitFleets(u);
+                if (uFleets.length > 0) {
+                    if (uFleets.some(f => {
                         if (f.code && f.code.toLowerCase().includes(lowerQuery)) return true;
                         if (f.name && f.name.toLowerCase().includes(lowerQuery)) return true;
                         if (f.ships && f.ships.some(s => {
@@ -365,22 +598,39 @@ const MainScreen = ({
 
     // Refs for map dimensions
     const mapImgRef = useRef(null);
+    const mapRef = useRef(null);
 
     // activeUnit logic: Search ALL visible layers (or all layers?) 
     // Requirement: "Non-active but currently selected layer... can edit fleet info"
     // So we should search all layers for the selected ID.
-    const allVisibleUnits = layers.filter(l => l.visible).flatMap(l => l.units);
+    const isChildMode = activeLayer && activeLayer.parentId;
+    const renderableLayers = layers.filter(layer => {
+        if (!layer.visible) return false;
+        if (isChildMode) return layer.id === activeLayerId;
+        return !layer.parentId;
+    });
+
+    // activeUnit logic: Search ALL visible layers (or all layers?) 
+    // Requirement: "Non-active but currently selected layer... can edit fleet info"
+    // So we should search all layers for the selected ID.
+    const allVisibleUnits = renderableLayers.flatMap(l => l.units || []);
     const activeUnit = allVisibleUnits.find(u => u.id === (selectedUnitId || hoveredUnitId));
 
     // --- Map Control Handlers ---
-    const handleWheel = (e) => {
-        if (e.ctrlKey || e.metaKey || true) { // Always zoom on wheel for now
-            e.preventDefault();
-            const scaleAmount = -e.deltaY * 0.001;
-            const newScale = Math.min(Math.max(0.1, scale + scaleAmount), 5);
-            setScale(newScale);
-        }
-    };
+    useEffect(() => {
+        const handleWheelNonPassive = (e) => {
+            if (e.ctrlKey || e.metaKey || true) {
+                e.preventDefault();
+                const scaleAmount = -e.deltaY * 0.001;
+                setScale(prev => Math.min(Math.max(0.1, prev + scaleAmount), 5));
+            }
+        };
+        const el = mapRef.current;
+        if (el) el.addEventListener('wheel', handleWheelNonPassive, { passive: false });
+        return () => { if (el) el.removeEventListener('wheel', handleWheelNonPassive); };
+    }, []);
+
+    const handleWheel = () => { }; // No-op now
 
     const handleMouseDown = (e) => {
         // Space key or Middle click for pan
@@ -488,17 +738,20 @@ const MainScreen = ({
         }
         else if (action === 'add_fleet' && targetUnit) {
             // Add another fleet to this pin
-            // Ensure targetUnit.fleets exists
+            const newFleetId = Date.now();
+            const newFleet = {
+                id: newFleetId,
+                code: 'New',
+                name: 'New Fleet',
+                ships: [],
+                remarks: ''
+            };
+            setFleets(prev => ({ ...prev, [newFleetId]: newFleet }));
+
             updateUnit(targetUnit.id, (u) => {
-                const newFleets = u.fleets ? [...u.fleets] : [];
-                newFleets.push({
-                    id: Date.now(),
-                    code: 'New',
-                    name: '',
-                    ships: [],
-                    remarks: ''
-                });
-                return { ...u, fleets: newFleets };
+                const newIds = u.fleetIds ? [...u.fleetIds] : (u.fleets ? [] : []); // If upgrading legacy
+                newIds.push(newFleetId);
+                return { ...u, fleetIds: newIds };
             });
 
             // Ensure active layer is switched so EditScreen finds it
@@ -536,9 +789,13 @@ const MainScreen = ({
         let newUnit = { id: newId, x: cx, y: cy, type };
 
         if (type === 'fleet') {
+            const newFleetId = newId + 1;
+            const newFleet = { id: newFleetId, code: 'NewUnit', name: 'New Fleet', ships: [], remarks: '' };
+            setFleets(prev => ({ ...prev, [newFleetId]: newFleet }));
+
             newUnit = {
                 ...newUnit,
-                fleets: [{ id: newId + 1, code: 'NewUnit', name: 'New Fleet', ships: [], remarks: '' }]
+                fleetIds: [newFleetId]
             };
         } else if (type === 'label') {
             newUnit = { ...newUnit, text: 'Label', fontSize: 16, color: 'black', rotation: 0 };
@@ -632,7 +889,7 @@ const MainScreen = ({
                         {(activeUnit.type === 'fleet' || !activeUnit.type) && (
                             <div>
                                 <h4 style={{ margin: '5px 0' }}>構成部隊</h4>
-                                {(activeUnit.fleets || []).map((f, i) => {
+                                {getUnitFleets(activeUnit).map((f, i) => {
                                     const match = f.code ? f.code.match(/^(\d{3,4})([A-Z]+)Sq\.$/) : null;
                                     const typeCode = match ? match[2] : null;
                                     const emblemSrc = f.symbolImage || (typeCode ? `/assets/ships/${typeCode}.png` : null);
@@ -856,7 +1113,7 @@ const MainScreen = ({
                         <div style={{ marginBottom: '10px' }}>
                             <label>サイズ (倍率): {Math.round((activeLayer.mapImageScale || 1) * 100)}%</label>
                             <input
-                                type="range" min="0.1" max="5.0" step="0.05"
+                                type="range" min="0.1" max="10.0" step="0.05"
                                 value={activeLayer.mapImageScale || 1}
                                 onChange={(e) => updateLayerImage(activeLayer.id, { mapImageScale: parseFloat(e.target.value) })}
                                 disabled={isSpectator}
@@ -900,6 +1157,13 @@ const MainScreen = ({
             {/* Main Area */}
             <div className="main-area">
                 <div className="toolbar">
+                    {activeLayer.parentId && (
+                        <div className="breadcrumb" style={{ marginRight: '10px', fontWeight: 'bold' }}>
+                            <button className="btn" onClick={() => setActiveLayerId(activeLayer.parentId)}>⬅ 親レイヤーへ戻る</button>
+                            <span style={{ marginLeft: '10px' }}>{activeLayer.name}</span>
+                        </div>
+                    )}
+
                     <div className="menu-group">
                         {!isSpectator && (
                             <>
@@ -913,6 +1177,7 @@ const MainScreen = ({
                         <button className="btn" onClick={() => setShowLayerPanel(!showLayerPanel)}>📑 レイヤー</button>
                         <button className="btn" onClick={onOpenShipList}>📋 艦艇一覧</button>
                         <button className="btn" onClick={() => setShowShareModal(true)}>🔗 共有</button>
+                        {!isSpectator && <button className="btn" style={{ background: '#e6f7ff' }} onClick={handleInitChildLayerCreation}>＋子レイヤー作成</button>}
                     </div>
                     {/* Tabs logic can be simpler or same as before */}
                     <div className="separator">|</div>
@@ -943,12 +1208,65 @@ const MainScreen = ({
 
                 {/* Map Container */}
                 <div
+                    ref={mapRef}
                     className="map-container"
                     onContextMenu={handleMapContextMenu}
-                    onWheel={handleWheel}
-                    onMouseDown={handleMouseDown}
-                    onMouseMove={handleMouseMove}
-                    onMouseUp={handleMouseUp}
+                    onMouseDown={(e) => {
+                        if (boundaryMode) {
+                            // Boundary Drawing Logic
+                            e.preventDefault();
+                            const rect = mapRef.current.getBoundingClientRect();
+                            const x = (e.clientX - rect.left - position.x) / scale;
+                            const y = (e.clientY - rect.top - position.y) / scale;
+                            setBoundaryStart({ x, y });
+                            setTempBoundary({ x, y, width: 0, height: 0, type: 'rect' });
+                        } else {
+                            handleMouseDown(e);
+                        }
+                    }}
+                    onMouseMove={(e) => {
+                        if (boundaryMode && boundaryStart) {
+                            const rect = mapRef.current.getBoundingClientRect();
+                            const x = (e.clientX - rect.left - position.x) / scale;
+                            const y = (e.clientY - rect.top - position.y) / scale;
+
+                            const minX = Math.min(boundaryStart.x, x);
+                            const minY = Math.min(boundaryStart.y, y);
+                            const width = Math.abs(x - boundaryStart.x);
+                            const height = Math.abs(y - boundaryStart.y);
+
+                            // Center-based storage for consistency with layerUtils
+                            // center = minX + width/2
+                            setTempBoundary({
+                                x: minX + width / 2,
+                                y: minY + height / 2,
+                                width,
+                                height,
+                                type: 'rect'
+                            });
+                        } else {
+                            handleMouseMove(e);
+                        }
+                    }}
+                    onMouseUp={(e) => {
+                        if (boundaryMode && boundaryStart) {
+                            // Finish Drawing
+                            if (tempBoundary && tempBoundary.width > 10) {
+                                // Confirm?
+                                if (window.confirm("この範囲で子レイヤーを作成しますか？")) {
+                                    handleConfirmBoundary(tempBoundary);
+                                } else {
+                                    setBoundaryStart(null);
+                                    setTempBoundary(null);
+                                }
+                            } else {
+                                setBoundaryStart(null);
+                                setTempBoundary(null);
+                            }
+                        } else {
+                            handleMouseUp();
+                        }
+                    }}
                     onMouseLeave={handleMouseUp}
                     onDoubleClick={() => {
                         if (isDraggingLayerImage) setIsDraggingLayerImage(false);
@@ -972,29 +1290,42 @@ const MainScreen = ({
                         position: 'absolute'
                     }}>
                         {/* Map Images Layer (Stacked) */}
-                        {layers.map((layer, index) => {
-                            if (!layer.mapImage) return null;
-                            // Requirement: "Active layers... hidden in map" handled by display: none
-                            // Stack order: index (same as layers array order). Last is top.
-                            return (
-                                <img
-                                    key={`map-layer-${layer.id}`}
-                                    src={layer.mapImage}
-                                    alt={`Map ${layer.name}`}
-                                    style={{
-                                        position: 'absolute', top: 0, left: 0,
-                                        zIndex: index, // Stack based on layer order
-                                        display: layer.visible ? 'block' : 'none', // Toggle visibility without unloading
-                                        pointerEvents: 'none',
-                                        userSelect: 'none',
-                                        WebkitUserDrag: 'none',
-                                        transformOrigin: '0 0',
-                                        transform: `translate(${layer.mapImageX || 0}px, ${layer.mapImageY || 0}px) rotate(${layer.mapImageRotation || 0}deg) scale(${layer.mapImageScale || 1})`,
-                                        opacity: layer.mapImageOpacity ?? 1
-                                    }}
-                                />
-                            );
-                        })}
+                        {/* Map Images Layer (Stacked) */}
+                        {renderableLayers.map((layer, index) => (
+                            <img
+                                key={`map-layer-${layer.id}`}
+                                src={layer.mapImage}
+                                alt={`Map ${layer.name}`}
+                                style={{
+                                    position: 'absolute', top: 0, left: 0,
+                                    zIndex: index, // Stack based on layer order
+                                    display: 'block',
+                                    pointerEvents: 'none',
+                                    userSelect: 'none',
+                                    WebkitUserDrag: 'none',
+                                    transformOrigin: '0 0',
+                                    transform: `translate(${layer.mapImageX || 0}px, ${layer.mapImageY || 0}px) rotate(${layer.mapImageRotation || 0}deg) scale(${layer.mapImageScale || 1})`,
+                                    opacity: layer.mapImageOpacity ?? 1
+                                }}
+                            />
+                        ))}
+
+                        {/* Passive Child Layer Boundaries (Visible when in Parent Layer) */}
+                        {layers.filter(l => l.parentId === activeLayerId && l.boundary).map(child => (
+                            <div
+                                key={`boundary-${child.id}`}
+                                style={{
+                                    position: 'absolute',
+                                    left: child.boundary.x - child.boundary.width / 2,
+                                    top: child.boundary.y - child.boundary.height / 2,
+                                    width: child.boundary.width,
+                                    height: child.boundary.height,
+                                    border: '1px solid rgba(0, 0, 0, 0.3)', // Faint border
+                                    pointerEvents: 'none',
+                                    zIndex: 60 // Behind units
+                                }}
+                            />
+                        ))}
 
                         {/* Map Lines SVG Layer */}
                         <svg style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', overflow: 'visible', pointerEvents: 'none', zIndex: 50 }}>
@@ -1005,7 +1336,7 @@ const MainScreen = ({
                                     </marker>
                                 ))}
                             </defs>
-                            {layers.filter(l => l.visible).flatMap(layer =>
+                            {renderableLayers.flatMap(layer =>
                                 (layer.units || []).filter(u => u.type === 'line').map(line => ({ ...line, _layerId: layer.id }))
                             ).map(line => {
                                 let d = '';
@@ -1038,9 +1369,64 @@ const MainScreen = ({
                             })}
                         </svg>
 
+
+                        {/* Selected Child Layer Boundary Visualization */}
+                        {(() => {
+                            const targetUnitId = selectedUnitId || hoveredUnitId;
+                            const selectedUnit = allVisibleUnits.find(u => u.id === targetUnitId);
+                            if (selectedUnit && selectedUnit.type === 'child_link' && selectedUnit.targetLayerId) {
+                                const targetLayer = layers.find(l => l.id === selectedUnit.targetLayerId);
+                                if (targetLayer && targetLayer.boundary) {
+                                    const b = targetLayer.boundary;
+                                    return (
+                                        <div style={{
+                                            position: 'absolute',
+                                            left: b.x - b.width / 2,
+                                            top: b.y - b.height / 2,
+                                            width: b.width,
+                                            height: b.height,
+                                            border: '3px solid cyan',
+                                            backgroundColor: 'rgba(0, 255, 255, 0.1)',
+                                            pointerEvents: 'none',
+                                            zIndex: 90,
+                                            boxShadow: '0 0 10px cyan'
+                                        }}>
+                                            <div style={{
+                                                position: 'absolute',
+                                                top: '-25px',
+                                                left: '0',
+                                                color: 'white',
+                                                background: 'rgba(0, 100, 100, 0.8)',
+                                                padding: '2px 8px',
+                                                borderRadius: '4px',
+                                                fontSize: '12px',
+                                                whiteSpace: 'nowrap'
+                                            }}>
+                                                {targetLayer.name} Scope
+                                            </div>
+                                        </div>
+                                    );
+                                }
+                            }
+                            return null;
+                        })()}
+                        {tempBoundary && (
+                            <div style={{
+                                position: 'absolute',
+                                left: tempBoundary.x - tempBoundary.width / 2,
+                                top: tempBoundary.y - tempBoundary.height / 2,
+                                width: tempBoundary.width,
+                                height: tempBoundary.height,
+                                border: '2px dashed blue',
+                                backgroundColor: 'rgba(0, 100, 255, 0.2)',
+                                pointerEvents: 'none',
+                                zIndex: 1000
+                            }} />
+                        )}
+
                         {/* Line Handles (Selected Line Only - Any Layer) */}
                         {(!isSpectator && activeUnit && activeUnit.type === 'line' && activeUnit.id === selectedUnitId) && activeUnit.points && activeUnit.points.map((p, idx) => (
-                            <Draggable
+                            <DraggableWithRef
                                 key={`${activeUnit.id}-${idx}`}
                                 position={{ x: p.x, y: p.y }}
                                 scale={scale}
@@ -1061,10 +1447,10 @@ const MainScreen = ({
                                     boxShadow: '0 0 2px rgba(0,0,0,0.5)'
                                 }}>
                                 </div>
-                            </Draggable>
+                            </DraggableWithRef>
                         ))}
 
-                        {layers.filter(l => l.visible).flatMap(layer =>
+                        {renderableLayers.flatMap(layer =>
                             (layer.units || []).map(unit => ({ ...unit, _layerId: layer.id }))
                         ).map(unit => {
                             const isLayerActive = unit._layerId === activeLayerId;
@@ -1074,7 +1460,7 @@ const MainScreen = ({
                             const isDraggable = !isSpectator;
 
                             return (
-                                <Draggable
+                                <DraggableWithRef
                                     key={unit.id}
                                     position={{ x: unit.x, y: unit.y }}
                                     scale={scale}
@@ -1087,6 +1473,9 @@ const MainScreen = ({
                                         const newX = data.x;
                                         const newY = data.y;
                                         updateUnit(unit.id, { x: newX, y: newY });
+
+                                        // Sync check
+                                        checkParentToChildDrop(unit, newX, newY);
 
                                         // Collision Check for Merge (fleets only)
                                         if ((!unit.type || unit.type === 'fleet') && !isSpectator) {
@@ -1119,6 +1508,12 @@ const MainScreen = ({
                                         }}
                                         onMouseEnter={() => { if (!selectedUnitId) setHoveredUnitId(unit.id); }}
                                         onMouseLeave={() => setHoveredUnitId(null)}
+                                        onDoubleClick={(e) => {
+                                            if (unit.type === 'child_link' && unit.targetLayerId) {
+                                                e.stopPropagation();
+                                                setActiveLayerId(unit.targetLayerId);
+                                            }
+                                        }}
                                         style={{
                                             position: 'absolute', cursor: isDraggable ? 'grab' : 'default',
                                             // Z-Index: Hover/Selected > Active Layer > Inactive Layer
@@ -1127,7 +1522,7 @@ const MainScreen = ({
                                             opacity: ((activeUnit && activeUnit.type === 'line' && activeUnit.id !== unit.id && !isSpectator) ? 0.5 : 1) // Ghost inactive layers
                                         }}
                                     >
-                                        {(!unit.type || unit.type === 'fleet') && (
+                                        {(!unit.type || unit.type === 'fleet' || unit.type === 'child_link') && (
                                             <div
                                                 style={{
                                                     color: unit.color || 'red',
@@ -1136,11 +1531,14 @@ const MainScreen = ({
                                                     whiteSpace: 'nowrap'
                                                 }}
                                             >
-                                                ▼
+                                                {unit.type === 'child_link' ? '🔗' : '▼'}
                                                 <span className="unit-label" style={{ marginLeft: '4px', display: 'inline-block', verticalAlign: 'top', textAlign: 'left', whiteSpace: 'normal' }}>
-                                                    {unit.displayName ?
-                                                        unit.displayName.split(/\u3000\u3000/).map((str, i) => <div key={i}>{str}</div>) :
-                                                        ((unit.fleets || []).map(f => f.code).join(' + ') || 'No Name')
+                                                    {unit.type === 'child_link' ?
+                                                        (layers.find(l => l.id === unit.targetLayerId)?.name || unit.displayName || 'Child Layer') :
+                                                        (unit.displayName ?
+                                                            unit.displayName.split(/\u3000\u3000/).map((str, i) => <div key={i}>{str}</div>) :
+                                                            (getUnitFleets(unit).map(f => f.code).join(' + ') || 'No Name')
+                                                        )
                                                     }
                                                 </span>
 
@@ -1171,47 +1569,91 @@ const MainScreen = ({
                                                         zIndex: 101,
                                                         pointerEvents: 'none',
                                                         marginTop: '2px',
-                                                        display: 'grid',
-                                                        gridTemplateColumns: 'auto auto 1fr',
+                                                        // Grid or Block depending on content
+                                                        display: (unit.type === 'child_link' && appSettings?.linkPinTooltipMode === 'grouped') ? 'block' : 'grid',
+                                                        gridTemplateColumns: (unit.type === 'child_link' && appSettings?.linkPinTooltipMode === 'grouped') ? 'none' : 'auto auto 1fr',
                                                         alignItems: 'center',
                                                         gap: '0 4px',
                                                         whiteSpace: 'nowrap',
-                                                        textShadow: 'none'
+                                                        textShadow: 'none',
+                                                        textAlign: 'left'
                                                     }}>
-                                                        {(unit.fleets || []).map((f, fi) => {
-                                                            const match = f.code.match(/^(\d{3,4})([A-Z]+)Sq\.$/);
-                                                            const typeCode = match ? match[2] : null;
-                                                            return (
-                                                                <React.Fragment key={fi}>
-                                                                    <div style={{
-                                                                        display: 'flex',
-                                                                        justifyContent: 'center',
-                                                                        alignItems: 'center',
-                                                                        width: '2.2em',
-                                                                        height: '1.6em',
-                                                                        overflow: 'hidden'
-                                                                    }}>
-                                                                        {typeCode && (
-                                                                            <img
-                                                                                src={`/assets/ships/${typeCode}.png`}
-                                                                                alt=""
-                                                                                style={{
-                                                                                    maxWidth: '100%',
-                                                                                    maxHeight: '100%',
-                                                                                    objectFit: 'contain',
-                                                                                    verticalAlign: 'middle'
-                                                                                }}
-                                                                                onError={(e) => e.target.style.display = 'none'}
-                                                                            />
-                                                                        )}
-                                                                    </div>
-                                                                    <span style={{ fontWeight: 'bold', textAlign: 'left' }}>
-                                                                        {f.code}{appSettings?.showFleetNameOnHover !== false ? ' :' : ''}
-                                                                    </span>
-                                                                    <span>{appSettings?.showFleetNameOnHover !== false ? f.name : ''}</span>
-                                                                </React.Fragment>
-                                                            );
-                                                        })}
+
+                                                        {unit.type === 'child_link' ? (
+                                                            // Child Link Logic
+                                                            (appSettings?.linkPinTooltipMode === 'grouped') ? (
+                                                                // Grouped Mode
+                                                                (() => {
+                                                                    const targetL = layers.find(l => l.id === unit.targetLayerId);
+                                                                    if (!targetL) return null;
+                                                                    const fleetUnits = targetL.units.filter(u => (!u.type || u.type === 'fleet') && u.fleetIds && u.fleetIds.length > 0);
+
+                                                                    return fleetUnits.map((u, ui) => {
+                                                                        const uFleets = u.fleetIds.map(fid => fleets[fid]).filter(Boolean);
+                                                                        const pinName = u.displayName || uFleets.map(f => f.code).join(' + ');
+
+                                                                        return (
+                                                                            <div key={ui} style={{ marginBottom: ui < fleetUnits.length - 1 ? '6px' : '0' }}>
+                                                                                <div style={{ fontWeight: 'bold', borderBottom: '1px solid #eee', marginBottom: '2px', paddingBottom: '1px' }}>
+                                                                                    {pinName}
+                                                                                </div>
+                                                                                <div style={{ display: 'grid', gridTemplateColumns: 'auto auto 1fr', gap: '0 4px', alignItems: 'center' }}>
+                                                                                    {uFleets.map((f, fi) => {
+                                                                                        const match = f.code.match(/^(\d{3,4})([A-Z]+)Sq\.$/);
+                                                                                        const typeCode = match ? match[2] : null;
+                                                                                        return (
+                                                                                            <React.Fragment key={fi}>
+                                                                                                <div style={{ width: '2.2em', height: '1.6em', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                                                                                    {typeCode && <img src={`/assets/ships/${typeCode}.png`} alt="" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} onError={(e) => e.target.style.display = 'none'} />}
+                                                                                                </div>
+                                                                                                <span style={{ fontWeight: 'bold' }}>{f.code}{appSettings?.showFleetNameOnHover !== false ? ' :' : ''}</span>
+                                                                                                <span>{appSettings?.showFleetNameOnHover !== false ? f.name : ''}</span>
+                                                                                            </React.Fragment>
+                                                                                        );
+                                                                                    })}
+                                                                                </div>
+                                                                            </div>
+                                                                        );
+                                                                    });
+                                                                })()
+                                                            ) : (
+                                                                // Flat Mode (Existing)
+                                                                (() => {
+                                                                    const targetL = layers.find(l => l.id === unit.targetLayerId);
+                                                                    if (!targetL) return [];
+                                                                    const allFids = targetL.units.flatMap(u => u.fleetIds || []);
+                                                                    const uniqueFids = [...new Set(allFids)];
+                                                                    return uniqueFids.map(id => fleets[id]).filter(Boolean).map((f, fi) => {
+                                                                        const match = f.code.match(/^(\d{3,4})([A-Z]+)Sq\.$/);
+                                                                        const typeCode = match ? match[2] : null;
+                                                                        return (
+                                                                            <React.Fragment key={fi}>
+                                                                                <div style={{ width: '2.2em', height: '1.6em', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                                                                    {typeCode && <img src={`/assets/ships/${typeCode}.png`} alt="" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} onError={(e) => e.target.style.display = 'none'} />}
+                                                                                </div>
+                                                                                <span style={{ fontWeight: 'bold' }}>{f.code}{appSettings?.showFleetNameOnHover !== false ? ' :' : ''}</span>
+                                                                                <span>{appSettings?.showFleetNameOnHover !== false ? f.name : ''}</span>
+                                                                            </React.Fragment>
+                                                                        );
+                                                                    });
+                                                                })()
+                                                            )
+                                                        ) : (
+                                                            // Normal Fleet Unit Logic
+                                                            getUnitFleets(unit).map((f, fi) => {
+                                                                const match = f.code.match(/^(\d{3,4})([A-Z]+)Sq\.$/);
+                                                                const typeCode = match ? match[2] : null;
+                                                                return (
+                                                                    <React.Fragment key={fi}>
+                                                                        <div style={{ width: '2.2em', height: '1.6em', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                                                            {typeCode && <img src={`/assets/ships/${typeCode}.png`} alt="" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} onError={(e) => e.target.style.display = 'none'} />}
+                                                                        </div>
+                                                                        <span style={{ fontWeight: 'bold' }}>{f.code}{appSettings?.showFleetNameOnHover !== false ? ' :' : ''}</span>
+                                                                        <span>{appSettings?.showFleetNameOnHover !== false ? f.name : ''}</span>
+                                                                    </React.Fragment>
+                                                                );
+                                                            })
+                                                        )}
                                                     </div>
                                                 )}
                                             </div>
@@ -1263,9 +1705,10 @@ const MainScreen = ({
                                             )
                                         }
                                     </div>
-                                </Draggable>
+                                </DraggableWithRef>
                             );
-                        })}
+                        })
+                        }
                     </div>
                 </div>
             </div >
@@ -1384,19 +1827,64 @@ const MainScreen = ({
                                 <button className="btn" onClick={() => setMergeCandidate(null)}>キャンセル</button>
                                 <button className="btn" onClick={() => {
                                     const { source, target } = mergeCandidate;
-                                    // Merge Logic
-                                    const newFleets = [...(target.fleets || []), ...(source.fleets || [])];
 
-                                    // Perform updates
-                                    // 1. Delete Source (from its layer)
+                                    // Resolve fleets using new store logic
+                                    const sourceFleets = getUnitFleets(source);
+                                    // We need their IDs. The objects themselves are in 'fleets'.
+                                    // If source unit was legacy, getUnitFleets extracted/migrated them?
+                                    // Actually getUnitFleets just returns objects.
+                                    // We need IDs.
+                                    const sourceFleetIds = source.fleetIds || sourceFleets.map(f => f.id);
+                                    const targetFleetIds = target.fleetIds || (target.fleets || []).map(f => f.id);
+
+                                    // Merge IDs
+                                    const newFleetIds = [...targetFleetIds, ...sourceFleetIds];
+
+                                    // 1. Delete Source
                                     deleteUnit(source.id);
 
-                                    // 2. Update Target (in its layer)
-                                    // We pass a function to ensure we capture latest state if needed, or just object patch
-                                    updateUnit(target.id, { fleets: newFleets });
+                                    // 2. Update Target
+                                    updateUnit(target.id, { fleetIds: newFleetIds });
+                                    // Note: If target had legacy 'fleets', we should probably clear it or migrate it?
+                                    // updateUnit merges props?
+                                    // The updateUnit implementation maps units.
+                                    // Check if we need to unset 'fleets' on target if it existed.
+                                    // The patch is applied.
+                                    // Ideally we delete 'fleets' property if we set 'fleetIds'.
+                                    // But updateUnit merges.
+                                    // We can pass undefined? JSON stringify might drop it.
+                                    // Or just ignore 'fleets' if 'fleetIds' exists (getUnitFleets handles this).
 
                                     setMergeCandidate(null);
                                 }} style={{ background: '#007bff', color: 'white' }}>統合する</button>
+                            </div>
+                        </div>
+                    </div>
+                )
+            }
+            {/* Parent Layer Selection Modal */}
+            {
+                showParentSelectModal && (
+                    <div className="modal-overlay" style={{
+                        position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+                        background: 'rgba(0,0,0,0.5)', zIndex: 1200,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center'
+                    }}>
+                        <div className="modal-content" style={{ background: 'white', padding: '20px', borderRadius: '8px', minWidth: '350px' }}>
+                            <h3>親レイヤーの選択</h3>
+                            <p>作成する子レイヤーの親となるレイヤーを選択してください。</p>
+                            <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #ccc', margin: '15px 0' }}>
+                                {layers.filter(l => !l.parentId).map(l => ( // Only root/parent layers can be parents for now? Or nested? Let's allow any except self (complex). For now, roots.
+                                    <div key={l.id}
+                                        onClick={() => handleSelectParentLayer(l.id)}
+                                        style={{ padding: '10px', borderBottom: '1px solid #eee', cursor: 'pointer', background: targetParentId === l.id ? '#e6f7ff' : 'white' }}
+                                    >
+                                        {l.name}
+                                    </div>
+                                ))}
+                            </div>
+                            <div style={{ textAlign: 'right' }}>
+                                <button className="btn" onClick={() => setShowParentSelectModal(false)}>キャンセル</button>
                             </div>
                         </div>
                     </div>
@@ -1436,7 +1924,8 @@ const MainScreen = ({
                         position: 'absolute', top: '60px', right: '10px',
                         background: 'white', border: '1px solid #ccc',
                         padding: '10px', borderRadius: '4px', boxShadow: '0 2px 5px rgba(0,0,0,0.2)',
-                        zIndex: 1100, width: '250px', maxHeight: '80vh', overflowY: 'auto'
+                        zIndex: 1100, width: '375px', maxHeight: '80vh', overflow: 'auto',
+                        resize: 'horizontal', minWidth: '200px'
                     }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
                             <h4 style={{ margin: 0 }}>レイヤー管理</h4>
@@ -1448,140 +1937,137 @@ const MainScreen = ({
                             </div>
                         )}
                         <div className="layer-list" style={{ display: 'flex', flexDirection: 'column', gap: '5px', position: 'relative' }} ref={layerListRef}>
-                            {layers.map((layer, index) => {
-                                const isDragging = index === draggingLayerIdx;
-                                let shiftY = 0;
-                                const ITEM_HEIGHT = 50 + 5; // Height + gap roughly
-                                if (draggingLayerIdx !== null && !isDragging) {
-                                    if (index > draggingLayerIdx && index <= placeholderLayerIdx) {
-                                        shiftY = -ITEM_HEIGHT;
-                                    } else if (index < draggingLayerIdx && index >= placeholderLayerIdx) {
-                                        shiftY = ITEM_HEIGHT;
-                                    }
-                                }
+                            {(() => {
+                                const displayLayers = getHierarchicalLayers();
 
-                                return (
-                                    <div key={layer.id} style={{
-                                        transition: isDragging ? 'none' : 'transform 0.2s',
-                                        transform: `translate3d(0, ${shiftY}px, 0)`,
-                                        zIndex: isDragging ? 100 : 0
-                                    }}>
-                                        <Draggable
-                                            axis="y"
-                                            position={isDragging ? undefined : { x: 0, y: 0 }}
-                                            onStart={(e) => handleLayerDragStart(e, index)}
-                                            onDrag={handleLayerDrag}
-                                            onStop={handleLayerDragStop}
-                                            disabled={isSpectator}
-                                            handle=".drag-handle"
-                                        >
-                                            <div style={{
-                                                border: activeLayerId === layer.id ? '2px solid #007bff' : '1px solid #eee',
-                                                borderRadius: '4px', padding: '5px',
-                                                background: layer.visible ? 'white' : '#f0f0f0',
-                                                opacity: (draggingLayerIdx !== null && !isDragging) ? 0.8 : (layer.visible ? 1 : 0.7),
-                                                boxShadow: isDragging ? '0 5px 15px rgba(0,0,0,0.2)' : 'none',
-                                                position: 'relative',
-                                                height: '50px',
-                                                boxSizing: 'border-box',
-                                                display: 'flex', alignItems: 'center', gap: '5px'
-                                            }}>
-                                                {!isSpectator && (
-                                                    <div className="drag-handle" style={{ cursor: 'grab', color: '#ccc', marginRight: '2px' }}>
-                                                        ☰
-                                                    </div>
-                                                )}
+                                return displayLayers.map((layer, index) => {
+                                    const isDragging = index === draggingLayerIdx;
 
-                                                <input
-                                                    type="checkbox"
-                                                    checked={layer.visible}
-                                                    onChange={(e) => {
-                                                        // Stop propagation to avoid picking the layer? No, checkbox is fine.
-                                                        handleToggleVisibility(layer.id);
-                                                    }}
-                                                    title="表示/非表示"
-                                                    style={{ cursor: 'pointer' }}
-                                                />
-
-                                                {editingLayerId === layer.id ? (
-                                                    <input
-                                                        autoFocus
-                                                        defaultValue={layer.name}
-                                                        onBlur={(e) => handleRenameLayer(layer.id, e.target.value)}
-                                                        onKeyDown={(e) => {
-                                                            if (e.key === 'Enter') handleRenameLayer(layer.id, e.currentTarget.value);
-                                                            if (e.key === 'Escape') setEditingLayerId(null);
-                                                        }}
-                                                        onClick={(e) => e.stopPropagation()} // Prevent selecting layer when clicking input
-                                                        style={{ flex: 1, padding: '2px 4px' }}
-                                                    />
-                                                ) : (
-                                                    <span
-                                                        onClick={() => {
-                                                            setActiveLayerId(layer.id);
-                                                            if (!layer.visible) handleToggleVisibility(layer.id);
-                                                        }}
-                                                        onDoubleClick={() => !isSpectator && setEditingLayerId(layer.id)}
-                                                        style={{
-                                                            cursor: 'pointer',
-                                                            fontWeight: activeLayerId === layer.id ? 'bold' : 'normal',
-                                                            flex: 1,
-                                                            color: activeLayerId === layer.id ? '#007bff' : 'inherit',
-                                                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
-                                                        }}
-                                                    >
-                                                        {layer.name}
-                                                    </span>
-                                                )}
-
-                                                <div style={{ display: 'flex', gap: '5px', justifyContent: 'flex-end', alignItems: 'center' }}>
+                                    return (
+                                        <div key={layer.id} style={{
+                                            marginLeft: `${(layer.depth || 0) * 20}px`,
+                                            position: 'relative',
+                                            zIndex: isDragging ? 100 : 0
+                                        }}>
+                                            <DraggableWithRef
+                                                axis="y"
+                                                position={isDragging ? undefined : { x: 0, y: 0 }}
+                                                onStart={(e) => handleLayerDragStart(e, index)}
+                                                onDrag={handleLayerDrag}
+                                                onStop={handleLayerDragStop}
+                                                disabled={isSpectator}
+                                                handle=".drag-handle"
+                                            >
+                                                <div style={{
+                                                    border: activeLayerId === layer.id ? '2px solid #007bff' : '1px solid #eee',
+                                                    borderRadius: '4px', padding: '5px',
+                                                    background: layer.visible ? 'white' : '#f0f0f0',
+                                                    opacity: (draggingLayerIdx !== null && !isDragging) ? 0.8 : (layer.visible ? 1 : 0.7),
+                                                    boxShadow: isDragging ? '0 5px 15px rgba(0,0,0,0.2)' : 'none',
+                                                    position: 'relative',
+                                                    height: '50px',
+                                                    boxSizing: 'border-box',
+                                                    display: 'flex', alignItems: 'center', gap: '5px'
+                                                }}>
                                                     {!isSpectator && (
-                                                        <>
-                                                            <button
-                                                                onClick={() => setEditingLayerId(layer.id)}
-                                                                title="名前を変更"
-                                                                style={{ fontSize: '0.7em', color: '#333', border: '1px solid #ccc', background: 'white', cursor: 'pointer', marginRight: '2px' }}
-                                                            >
-                                                                名
-                                                            </button>
-                                                            <button
-                                                                onClick={() => handleDuplicateLayer(layer.id)}
-                                                                title="レイヤーを複製"
-                                                                style={{ fontSize: '0.7em', color: '#333', border: '1px solid #ccc', background: 'white', cursor: 'pointer', marginRight: '2px' }}
-                                                            >
-                                                                複
-                                                            </button>
-                                                            <button disabled={layers.length <= 1} onClick={() => handleDeleteLayer(layer.id)} style={{ fontSize: '0.7em', color: 'red', border: '1px solid #ccc', background: 'white', cursor: 'pointer' }}>×</button>
-                                                        </>
+                                                        <div className="drag-handle" style={{ cursor: 'grab', color: '#ccc', marginRight: '2px' }}>
+                                                            ☰
+                                                        </div>
                                                     )}
-                                                    {layer.mapImage ? (
-                                                        <button onClick={() => handleImageDelete(layer.id)} style={{ fontSize: '0.7em', color: 'orange', padding: '1px' }} disabled={isSpectator}>画消</button>
-                                                    ) : (
-                                                        !isSpectator && <label style={{ fontSize: '0.7em', color: 'blue', cursor: 'pointer', border: '1px dashed blue', padding: '0 2px' }}>
-                                                            ＋画<input type="file" hidden accept="image/*" onChange={(e) => {
-                                                                const f = e.target.files[0];
-                                                                if (f) {
-                                                                    const url = URL.createObjectURL(f);
-                                                                    setLayers(prev => prev.map(l => l.id === layer.id ? {
-                                                                        ...l,
-                                                                        mapImage: url,
-                                                                        mapImageBlob: f,
-                                                                        mapImageX: 0, mapImageY: 0, mapImageScale: 1, mapImageRotation: 0, mapImageOpacity: 1
-                                                                    } : l));
-                                                                }
-                                                            }} />
-                                                        </label>
-                                                    )}
-                                                </div>
-                                            </div>
-                                        </Draggable>
-                                    </div>
-                                );
-                            })}
 
-                            {/* Layer Image Settings in Panel? Or Sidebar? Plan said Sidebar. */}
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={layer.visible}
+                                                        onChange={(e) => handleToggleVisibility(layer.id)}
+                                                        title="表示/非表示"
+                                                        style={{ cursor: 'pointer' }}
+                                                    />
+
+                                                    {/* Edit Name Logic */}
+                                                    {editingLayerId === layer.id ? (
+                                                        <input
+                                                            autoFocus
+                                                            defaultValue={layer.name}
+                                                            onBlur={(e) => handleRenameLayer(layer.id, e.target.value)}
+                                                            onKeyDown={(e) => {
+                                                                if (e.key === 'Enter') handleRenameLayer(layer.id, e.currentTarget.value);
+                                                                if (e.key === 'Escape') setEditingLayerId(null);
+                                                            }}
+                                                            onClick={(e) => e.stopPropagation()}
+                                                            style={{ flex: 1, padding: '2px 4px' }}
+                                                        />
+                                                    ) : (
+                                                        <span
+                                                            onClick={() => {
+                                                                setActiveLayerId(layer.id);
+                                                                if (!layer.visible) handleToggleVisibility(layer.id);
+                                                            }}
+                                                            onDoubleClick={() => !isSpectator && setEditingLayerId(layer.id)}
+                                                            style={{
+                                                                cursor: 'pointer',
+                                                                fontWeight: activeLayerId === layer.id ? 'bold' : 'normal',
+                                                                flex: 1,
+                                                                color: activeLayerId === layer.id ? '#007bff' : 'inherit',
+                                                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                                                fontSize: layer.depth > 0 ? '0.9em' : '1em'
+                                                            }}
+                                                        >
+                                                            {layer.name}
+                                                        </span>
+                                                    )}
+
+                                                    <div style={{ display: 'flex', gap: '5px', justifyContent: 'flex-end', alignItems: 'center' }}>
+                                                        {!isSpectator && (
+                                                            <>
+                                                                <button
+                                                                    onClick={() => handleAddChildLayer(layer.id)}
+                                                                    title="詳細(子)レイヤーを追加"
+                                                                    style={{ fontSize: '0.7em', color: '#007bff', border: '1px solid #ccc', background: 'white', cursor: 'pointer', marginRight: '2px', fontWeight: 'bold' }}
+                                                                >
+                                                                    +子
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => setEditingLayerId(layer.id)}
+                                                                    style={{ fontSize: '0.7em', color: '#333', border: '1px solid #ccc', background: 'white', cursor: 'pointer', marginRight: '2px' }}
+                                                                >
+                                                                    名
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => handleDuplicateLayer(layer.id)}
+                                                                    style={{ fontSize: '0.7em', color: '#333', border: '1px solid #ccc', background: 'white', cursor: 'pointer', marginRight: '2px' }}
+                                                                >
+                                                                    複
+                                                                </button>
+                                                                <button disabled={layers.length <= 1} onClick={() => handleDeleteLayer(layer.id)} style={{ fontSize: '0.7em', color: 'red', border: '1px solid #ccc', background: 'white', cursor: 'pointer' }}>×</button>
+                                                            </>
+                                                        )}
+                                                        {layer.mapImage ? (
+                                                            <button onClick={() => handleImageDelete(layer.id)} style={{ fontSize: '0.7em', color: 'orange', padding: '1px' }} disabled={isSpectator}>画消</button>
+                                                        ) : (
+                                                            !isSpectator && <label style={{ fontSize: '0.7em', color: 'blue', cursor: 'pointer', border: '1px dashed blue', padding: '0 2px' }}>
+                                                                ＋画<input type="file" hidden accept="image/*" onChange={(e) => {
+                                                                    const f = e.target.files[0];
+                                                                    if (f) {
+                                                                        const url = URL.createObjectURL(f);
+                                                                        setLayers(prev => prev.map(l => l.id === layer.id ? {
+                                                                            ...l,
+                                                                            mapImage: url,
+                                                                            mapImageBlob: f,
+                                                                            mapImageX: 0, mapImageY: 0, mapImageScale: 1, mapImageRotation: 0, mapImageOpacity: 1
+                                                                        } : l));
+                                                                    }
+                                                                }} />
+                                                            </label>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            </DraggableWithRef>
+                                        </div>
+                                    );
+                                });
+                            })()}
                         </div>
-                    </div >
+                    </div>
                 )
             }
         </div >

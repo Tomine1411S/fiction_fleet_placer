@@ -1,11 +1,20 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Draggable from 'react-draggable';
+
+const DraggableWithRef = ({ children, ...props }) => {
+    const nodeRef = React.useRef(null);
+    return (
+        <Draggable nodeRef={nodeRef} {...props}>
+            {React.cloneElement(React.Children.only(children), { ref: nodeRef })}
+        </Draggable>
+    );
+};
 import { parseShipString, formatShipString } from '../utils/parser';
 
 const MAP_WIDTH = 800;
 const MAP_HEIGHT = 600;
 
-const EditScreen = ({ units, setUnits, mapImage, onSwitchScreen, selectedUnitId, editingShipIndices, shipTypes, shipClasses, fleetTypes, fleetSuffixes, appSettings, isSpectator }) => {
+const EditScreen = ({ units, setUnits, fleets, setFleets, mapImage, onSwitchScreen, selectedUnitId, editingShipIndices, shipTypes, shipClasses, fleetTypes, fleetSuffixes, appSettings, isSpectator }) => {
 
     const targetPin = units.find(u => u.id === selectedUnitId);
 
@@ -20,56 +29,73 @@ const EditScreen = ({ units, setUnits, mapImage, onSwitchScreen, selectedUnitId,
         }
     }, [editingShipIndices]);
 
-    const fleets = targetPin ? (targetPin.fleets || []) : [];
+    // Resolve Fleets from IDs
+    const targetFleets = targetPin ? (targetPin.fleetIds || []).map(id => fleets[id]).filter(Boolean) : [];
+
+    // Fallback for legacy (if any) - though migration should handle it.
+    // If fleetIds is missing but fleets exists, use it? 
+    // Ideally we should force migration, but for robustness:
+    const displayFleets = targetFleets.length > 0 ? targetFleets : (targetPin?.fleets || []);
 
     // --- State for Sortable Drag ---
     const [draggingIdx, setDraggingIdx] = useState(null); // Index of the fleet being dragged
     const [placeholderIdx, setPlaceholderIdx] = useState(null); // Current visual position in the list
     const containerRef = useRef(null);
-    const CARD_WIDTH = 440; // Approx width (400 + 32 + borders + gaps)
+    const CARD_WIDTH = 420; // 400 (Card) + 20 (Gap)
 
     // Fleetの更新ハンドラ
     const handleFleetChange = (fleetIndex, field, value) => {
         if (isSpectator) return;
         if (!targetPin) return;
-        const newFleets = [...fleets];
-        let updatedFleet = { ...newFleets[fleetIndex], [field]: value };
 
-        // Auto-generate Name on Code change
-        if (field === 'code') {
-            const autoConvert = appSettings?.autoConvertFleetName ?? true;
-            if (autoConvert) {
-                const suffixes = (fleetSuffixes && fleetSuffixes.length > 0)
-                    ? fleetSuffixes
-                    : [{ suffix: 'Sq.', format: '{number}{type}Sq.' }]; // Fallback if empty (shouldn't happen with migration)
+        // Identify target fleet
+        // If using fleetIds
+        if (targetPin.fleetIds && targetPin.fleetIds[fleetIndex]) {
+            const fleetId = targetPin.fleetIds[fleetIndex];
+            const currentFleet = fleets[fleetId];
+            let updatedFleet = { ...currentFleet, [field]: value };
 
-                for (const s of suffixes) {
-                    if (!s.suffix) continue;
-                    // Escape suffix for regex
-                    const escapedSuffix = s.suffix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                    // Regex: Start + Number(3-4) + Type(Any non-greedy) + Suffix + End
-                    const regex = new RegExp(`^(\\d{3,4})(.+?)${escapedSuffix}$`);
-                    const match = value.match(regex);
+            // Auto-generate Name on Code change
+            if (field === 'code') {
+                const autoConvert = appSettings?.autoConvertFleetName ?? true;
+                if (autoConvert) {
+                    const suffixes = (fleetSuffixes && fleetSuffixes.length > 0)
+                        ? fleetSuffixes
+                        : [{ suffix: 'Sq.', format: '{number}{type}Sq.' }];
 
-                    if (match) {
-                        const number = match[1];
-                        const typeCode = match[2];
-                        const typeObj = fleetTypes.find(t => t.type === typeCode);
+                    for (const s of suffixes) {
+                        if (!s.suffix) continue;
+                        const escapedSuffix = s.suffix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                        const regex = new RegExp(`^(\\d{3,4})(.+?)${escapedSuffix}$`);
+                        const match = value.match(regex);
 
-                        if (typeObj) {
-                            let name = s.format || '{number}{type}';
-                            name = name.replace('{number}', number);
-                            name = name.replace('{type}', typeObj.name_of_fleet);
-                            updatedFleet.name = name;
-                            break; // Stop after first match
+                        if (match) {
+                            const number = match[1];
+                            const typeCode = match[2];
+                            const typeObj = fleetTypes.find(t => t.type === typeCode);
+
+                            if (typeObj) {
+                                let name = s.format || '{number}{type}';
+                                name = name.replace('{number}', number);
+                                name = name.replace('{type}', typeObj.name_of_fleet);
+                                updatedFleet.name = name;
+                                updatedFleet.code = value; // Update the code too (though already set by field=code)
+                                // Actually, handleFleetChange sets [field]: value.
+                                // We are overriding updatedFleet.name.
+                                // The loop breaks after found.
+                                break;
+                            }
                         }
                     }
                 }
             }
-        }
 
-        newFleets[fleetIndex] = updatedFleet;
-        setUnits(units.map(u => u.id === targetPin.id ? { ...u, fleets: newFleets } : u));
+            setFleets(prev => ({ ...prev, [fleetId]: updatedFleet }));
+        } else {
+            // Legacy Fallback (modifying unit.fleets directly)
+            const newFleets = [...(targetPin.fleets || [])];
+            // Basic implementation for legacy - mostly skipped as migration handles it
+        }
     };
 
     // 艦艇データの直接更新 (Structured Input)
@@ -77,42 +103,34 @@ const EditScreen = ({ units, setUnits, mapImage, onSwitchScreen, selectedUnitId,
         if (isSpectator) return;
         if (!targetPin) return;
 
-        const newFleets = [...fleets];
-        const currentShip = (newFleets[fleetIndex].ships && newFleets[fleetIndex].ships[shipIndex]) || { type: '', classCode: '', number: '', name: '' };
+        if (targetPin.fleetIds && targetPin.fleetIds[fleetIndex]) {
+            const fleetId = targetPin.fleetIds[fleetIndex];
+            const currentFleet = fleets[fleetId];
+            const newShips = [...(currentFleet.ships || [])];
+            const currentShip = newShips[shipIndex] || { type: '', classCode: '', number: '', name: '' };
 
-        const updatedShip = { ...currentShip, [field]: value };
+            newShips[shipIndex] = { ...currentShip, [field]: value };
 
-        // Ensure ships array exists and is large enough
-        if (!newFleets[fleetIndex].ships) newFleets[fleetIndex].ships = [];
-        newFleets[fleetIndex].ships[shipIndex] = updatedShip;
-
-        setUnits(units.map(u => u.id === targetPin.id ? { ...u, fleets: newFleets } : u));
+            setFleets(prev => ({
+                ...prev,
+                [fleetId]: { ...currentFleet, ships: newShips }
+            }));
+        }
     };
 
     // --- Sortable Handlers ---
 
     const handleDragStart = (e, index) => {
         if (isSpectator) return;
-        // e.stopPropagation(); // Standard practice
-
         setDraggingIdx(index);
         setPlaceholderIdx(index);
     };
 
     const handleDrag = (e, data) => {
-        // Calculate new placeholder index based on drag position relative to container
-        if (!containerRef.current) return;
-
-        // We use the mouse position or element position?
-        // data.x is relative to the start position ({0,0}) of this element.
-        // But since we shift other elements, their positions change.
-        // We really just want the absolute visual index.
-
-        // Simplest: Calculate "Offset in Cards" from start index
+        // Calculate new placeholder index based on drag position relative to start
         const moveCount = Math.round(data.x / CARD_WIDTH);
-
         let newIdx = draggingIdx + moveCount;
-        newIdx = Math.max(0, Math.min(newIdx, fleets.length - 1));
+        newIdx = Math.max(0, Math.min(newIdx, displayFleets.length - 1)); // Use displayFleets length
 
         if (newIdx !== placeholderIdx) {
             setPlaceholderIdx(newIdx);
@@ -124,10 +142,18 @@ const EditScreen = ({ units, setUnits, mapImage, onSwitchScreen, selectedUnitId,
 
         if (draggingIdx !== placeholderIdx) {
             // Apply reorder
-            const newFleets = [...fleets];
-            const [movedFleet] = newFleets.splice(draggingIdx, 1);
-            newFleets.splice(placeholderIdx, 0, movedFleet);
-            setUnits(units.map(u => u.id === targetPin.id ? { ...u, fleets: newFleets } : u));
+            if (targetPin.fleetIds) {
+                const newFleetIds = [...targetPin.fleetIds];
+                const [movedId] = newFleetIds.splice(draggingIdx, 1);
+                newFleetIds.splice(placeholderIdx, 0, movedId);
+                setUnits(units.map(u => u.id === targetPin.id ? { ...u, fleetIds: newFleetIds } : u));
+            } else if (targetPin.fleets) {
+                // Legacy Fallback
+                const newFleets = [...targetPin.fleets];
+                const [movedFleet] = newFleets.splice(draggingIdx, 1);
+                newFleets.splice(placeholderIdx, 0, movedFleet);
+                setUnits(units.map(u => u.id === targetPin.id ? { ...u, fleets: newFleets } : u));
+            }
         }
 
         setDraggingIdx(null);
@@ -136,9 +162,10 @@ const EditScreen = ({ units, setUnits, mapImage, onSwitchScreen, selectedUnitId,
 
     const handleDeleteFleet = (e, index) => {
         if (!window.confirm("この艦隊を削除してもよろしいですか？")) return;
-        const newFleets = [...fleets];
-        newFleets.splice(index, 1);
-        setUnits(units.map(u => u.id === targetPin.id ? { ...u, fleets: newFleets } : u));
+        if (targetPin.fleetIds) {
+            const newFleetIds = targetPin.fleetIds.filter((_, i) => i !== index);
+            setUnits(units.map(u => u.id === targetPin.id ? { ...u, fleetIds: newFleetIds } : u));
+        }
     };
 
 
@@ -220,7 +247,7 @@ const EditScreen = ({ units, setUnits, mapImage, onSwitchScreen, selectedUnitId,
                 </div>
 
                 {/* Visible Fleets */}
-                {fleets.map((fleet, index) => {
+                {displayFleets.map((fleet, index) => {
                     const isDragging = index === draggingIdx;
 
                     // --- Shuffle Logic ---
@@ -245,9 +272,9 @@ const EditScreen = ({ units, setUnits, mapImage, onSwitchScreen, selectedUnitId,
                                 zIndex: isDragging ? 100 : 0
                             }}
                         >
-                            <Draggable
+                            <DraggableWithRef
                                 axis="x"
-                                position={isDragging ? undefined : { x: 0, y: 0 }} // Lock others to 0
+                                position={isDragging ? undefined : { x: 0, y: 0 }} // Lock others to 0. Dragging: Uncontrolled.
                                 defaultPosition={{ x: 0, y: 0 }}
                                 onStart={(e) => handleDragStart(e, index)}
                                 onDrag={handleDrag}
@@ -451,7 +478,7 @@ const EditScreen = ({ units, setUnits, mapImage, onSwitchScreen, selectedUnitId,
                                         </div>
                                     )}
                                 </div>
-                            </Draggable>
+                            </DraggableWithRef>
                         </div>
                     );
                 })}
@@ -461,8 +488,12 @@ const EditScreen = ({ units, setUnits, mapImage, onSwitchScreen, selectedUnitId,
                     <div
                         className="unit-card add-card"
                         onClick={() => {
-                            const newFleets = [...fleets, { id: Date.now(), code: 'New', name: '', ships: [], remarks: '' }];
-                            setUnits(units.map(u => u.id === targetPin.id ? { ...u, fleets: newFleets } : u));
+                            const newFleetId = Date.now();
+                            const newFleet = { id: newFleetId, code: 'New', name: '', ships: [], remarks: '' };
+                            setFleets(prev => ({ ...prev, [newFleetId]: newFleet }));
+
+                            const newFleetIds = targetPin.fleetIds ? [...targetPin.fleetIds, newFleetId] : [newFleetId];
+                            setUnits(units.map(u => u.id === targetPin.id ? { ...u, fleetIds: newFleetIds } : u));
                         }}
                         style={{ minWidth: '100px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', border: '2px dashed #ccc', borderRadius: '8px', background: '#f9f9f9' }}
                     >

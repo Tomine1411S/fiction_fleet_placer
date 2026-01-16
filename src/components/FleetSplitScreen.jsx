@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 
-const FleetSplitScreen = ({ units, setUnits, onSwitchScreen, selectedUnitId, shipTypes, shipClasses, isSpectator }) => {
+const FleetSplitScreen = ({ units, setUnits, fleets, setFleets, onSwitchScreen, selectedUnitId, shipTypes, shipClasses, isSpectator }) => {
     const sourceUnit = units.find(u => u.id === selectedUnitId);
 
     // Initial state setup
@@ -11,9 +11,13 @@ const FleetSplitScreen = ({ units, setUnits, onSwitchScreen, selectedUnitId, shi
     const [dragState, setDragState] = useState(null); // { level: 'fleet', origin: 'source'/'new', index: number }
 
     useEffect(() => {
-        if (sourceUnit && sourceUnit.fleets) {
+        if (sourceUnit) {
+            // Resolve Fleets
+            const resolvedFleets = (sourceUnit.fleetIds || []).map(id => fleets[id]).filter(Boolean);
+            const initialFleets = resolvedFleets.length > 0 ? resolvedFleets : (sourceUnit.fleets || []);
+
             // Deep copy to avoid mutating original state until save
-            setSourceFleets(JSON.parse(JSON.stringify(sourceUnit.fleets)));
+            setSourceFleets(JSON.parse(JSON.stringify(initialFleets)));
             // Initialize new fleet with one empty fleet
             setNewFleets([]);
         }
@@ -217,26 +221,45 @@ const FleetSplitScreen = ({ units, setUnits, onSwitchScreen, selectedUnitId, shi
 
         const newUnitId = Date.now();
 
-        // 1. Update Source Unit
+        // Prepare Fleet Updates
+        const fleetsUpdate = {};
+        const sourceFleetIds = [];
+        const newFleetIds = [];
+
+        sourceFleets.forEach(f => {
+            fleetsUpdate[f.id] = f;
+            sourceFleetIds.push(f.id);
+        });
+
+        newFleets.forEach(f => {
+            fleetsUpdate[f.id] = f;
+            newFleetIds.push(f.id);
+        });
+
+        // 1. Update Global Fleets
+        setFleets(prev => ({ ...prev, ...fleetsUpdate }));
+
+        // 2. Update Source Unit
         const updatedSourceUnit = {
             ...sourceUnit,
-            fleets: sourceFleets
+            fleetIds: sourceFleetIds
         };
+        // Remove legacy
+        if (updatedSourceUnit.fleets) delete updatedSourceUnit.fleets;
 
-        // 2. Create New Unit (Conditional)
-        if (newFleets.length > 0) {
+        // 3. Create New Unit (Conditional)
+        if (newFleetIds.length > 0) {
             const newUnit = {
                 id: newUnitId,
                 type: 'fleet',
                 x: sourceUnit.x - 100,
                 y: sourceUnit.y,
                 displayName: 'New Split Fleet',
-                fleets: newFleets,
+                fleetIds: newFleetIds,
                 color: sourceUnit.color || '#FF0000'
             };
 
-            // 3. Update Global State
-            // Remove old source unit, add updated source unit and new unit
+            // 4. Update Global State
             const updatedUnits = units.map(u => u.id === sourceUnit.id ? updatedSourceUnit : u);
             updatedUnits.push(newUnit);
 

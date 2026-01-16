@@ -20,6 +20,7 @@ function App() {
     const [layers, setLayers] = useState([
         { id: 1, name: 'Layer 1', visible: true, units: [], mapImage: null, mapImageBlob: null }
     ]);
+    const [fleets, setFleets] = useState({}); // New Global Fleet Store { id: FleetObj }
     const [activeLayerId, setActiveLayerId] = useState(1);
 
     // Derived State for backward compatibility / child props
@@ -134,6 +135,7 @@ function App() {
                         units: data.units || [],
                         mapImage: data.mapImage || null
                     }]);
+                    if (data.fleets) setFleets(data.fleets);
 
                     if (data.overrides) {
                         if (data.overrides.shipTypes) setShipTypes(data.overrides.shipTypes);
@@ -150,13 +152,11 @@ function App() {
             isRemoteUpdate.current = true;
             if (data.layers) {
                 setLayers(data.layers);
-            } else if (Array.isArray(data)) {
-                // Fallback legacy support
-                setLayers(prev => {
-                    const l1 = prev.find(l => l.id === 1) || { id: 1, name: 'Layer 1', visible: true };
-                    return [{ ...l1, units: data }, ...prev.filter(l => l.id !== 1)];
-                });
             }
+            if (data.fleets) {
+                setFleets(data.fleets);
+            }
+            // Legacy fallback removed or handled above
         });
 
         // Map update is layer specific now, but if we receive legacy map_update?
@@ -196,9 +196,9 @@ function App() {
         }
         if (isSpectator) return;
 
-        // Emit local change (Send all layers)
-        socket.emit('update_data', { sessionId, layers });
-    }, [layers, socket, sessionId, isSpectator]);
+        // Emit local change (Send all layers and fleets)
+        socket.emit('update_data', { sessionId, layers, fleets });
+    }, [layers, fleets, socket, sessionId, isSpectator]);
 
     // --- Sync Map to Server (Legacy/Layer 1 assumption for now or disable?) ---
     // With layers, map data is inside layer. We should sync via update_data probably,
@@ -352,17 +352,17 @@ function App() {
                 const data = await loadProject(file);
                 setIsServerSynced(true);
 
+                setIsServerSynced(true);
+
                 if (data.layers) {
                     setLayers(data.layers);
                     setActiveLayerId(data.activeLayerId || 1);
+                }
+                if (data.fleets) {
+                    setFleets(data.fleets);
                 } else {
-                    // Legacy load
-                    setLayers([{
-                        id: 1, name: 'Layer 1', visible: true,
-                        units: data.units || [],
-                        mapImage: data.mapImage,
-                        mapImageBlob: data.mapImageBlob
-                    }]);
+                    // Legacy load where fleets might be embedded? 
+                    // No, loadProject handles migration now, so data.fleets should exist if migration happened.
                 }
 
                 // Apply Config Overrides
@@ -418,6 +418,11 @@ function App() {
                     setLayers={setLayers}
                     activeLayerId={activeLayerId}
                     setActiveLayerId={setActiveLayerId}
+
+                    // New Data Props
+                    fleets={fleets}
+                    setFleets={setFleets}
+
                     // Legacy Props Compatibility
                     units={units}
                     setUnits={setUnits}
@@ -432,23 +437,23 @@ function App() {
                             const overrides = {};
                             const hasChanged = (base, current) => JSON.stringify(base) !== JSON.stringify(current);
 
-
                             if (hasChanged(baseShipTypes, shipTypes)) overrides.shipTypes = shipTypes;
                             if (hasChanged(baseShipClasses, shipClasses)) overrides.shipClasses = shipClasses;
                             if (hasChanged(baseFleetTypes, fleetTypes)) overrides.fleetTypes = fleetTypes;
                             overrides.fleetSuffixes = fleetSuffixes;
-                            overrides.appSettings = appSettings; // Always save settings
+                            overrides.appSettings = appSettings;
 
-                            await saveProject({ layers, activeLayerId, overrides });
+                            await saveProject({ layers, fleets, activeLayerId, overrides });
                         } catch (e) {
                             console.error(e);
                             alert("ZIP保存に失敗しました: " + e.message);
                         }
                     }}
-                    onDownloadReport={() => { }} // Moved to MainScreen modal
+                    onDownloadReport={() => { }}
                     selectedUnitId={selectedUnitId}
                     setSelectedUnitId={setSelectedUnitId}
                     fleetTypes={fleetTypes}
+
                     // New Props
                     isSpectator={isSpectator}
                     sessionId={sessionId}
@@ -460,6 +465,8 @@ function App() {
                 <FleetSplitScreen
                     units={units}
                     setUnits={setUnits}
+                    fleets={fleets}
+                    setFleets={setFleets}
                     onSwitchScreen={() => setCurrentScreen('main')}
                     selectedUnitId={selectedUnitId}
                     shipTypes={shipTypes}
@@ -470,6 +477,8 @@ function App() {
                 <EditScreen
                     units={units}
                     setUnits={setUnits}
+                    fleets={fleets}
+                    setFleets={setFleets}
                     mapImage={currentMapImage}
                     onSwitchScreen={() => {
                         setCurrentScreen('main');
@@ -499,6 +508,8 @@ function App() {
                 <ShipListScreen
                     units={units}
                     setUnits={setUnits}
+                    fleets={fleets}
+                    setFleets={setFleets}
                     layers={layers} // Added
                     shipTypes={shipTypes}
                     shipClasses={shipClasses}
