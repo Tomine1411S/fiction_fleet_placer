@@ -5,9 +5,10 @@ const SettingsScreen = ({
     shipTypes, setShipTypes,
     shipClasses, setShipClasses,
     fleetTypes, setFleetTypes,
+    fleetSuffixes, setFleetSuffixes, // New Props
     appSettings, setAppSettings // New Props
 }) => {
-    const [activeTab, setActiveTab] = useState('types'); // 'types', 'classes', 'fleets', 'misc'
+    const [activeTab, setActiveTab] = useState('types'); // 'types', 'classes', 'fleets', 'suffixes', 'misc'
 
     // --- Duplicate Detection Logic ---
     const duplicateShipTypes = useMemo(() => {
@@ -28,12 +29,19 @@ const SettingsScreen = ({
         return new Set(fleetTypes.filter(f => counts[f.type] > 1).map(f => f.type));
     }, [fleetTypes]);
 
+    const duplicateFleetSuffixes = useMemo(() => {
+        const counts = {};
+        (fleetSuffixes || []).forEach(s => { if (s.suffix) counts[s.suffix] = (counts[s.suffix] || 0) + 1; });
+        return new Set((fleetSuffixes || []).filter(s => counts[s.suffix] > 1).map(s => s.suffix));
+    }, [fleetSuffixes]);
+
     // --- Import / Export Handlers ---
     const handleExport = () => {
         const data = {
             shipTypes,
             shipClasses,
-            fleetTypes
+            fleetTypes,
+            fleetSuffixes
         };
         const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
         const url = URL.createObjectURL(blob);
@@ -53,7 +61,9 @@ const SettingsScreen = ({
                 const data = JSON.parse(event.target.result);
                 if (data.shipTypes) setShipTypes(data.shipTypes);
                 if (data.shipClasses) setShipClasses(data.shipClasses);
+                if (data.shipClasses) setShipClasses(data.shipClasses);
                 if (data.fleetTypes) setFleetTypes(data.fleetTypes);
+                if (data.fleetSuffixes) setFleetSuffixes(data.fleetSuffixes);
                 alert("設定をインポートしました。");
             } catch (err) {
                 console.error(err);
@@ -274,12 +284,94 @@ const SettingsScreen = ({
         );
     };
 
+    // --- Fleet Suffixes Editor ---
+    const renderFleetSuffixesEditor = () => {
+        const safeSuffixes = fleetSuffixes || [];
+        const addRow = () => {
+            setFleetSuffixes([...safeSuffixes, { suffix: '.', format: '{number}{type}' }]);
+        };
+        const updateRow = (index, field, value) => {
+            const newSuffixes = [...safeSuffixes];
+            newSuffixes[index][field] = value;
+            setFleetSuffixes(newSuffixes);
+        };
+        const deleteRow = (index) => {
+            if (window.confirm("削除しますか？")) {
+                setFleetSuffixes(safeSuffixes.filter((_, i) => i !== index));
+            }
+        };
+
+        return (
+            <div>
+                <h3>部隊コード形式 (Fleet Format)</h3>
+                <p style={{ fontSize: '0.9em', color: '#666' }}>
+                    末尾記号(Suffix)ごとの部隊名変換ルールを設定します。<br />
+                    Format内の <code>{'{number}'}</code> は番号、<code>{'{type}'}</code> は部隊種別名(Fleet Type Name)に置換されます。
+                </p>
+                <table style={tableStyle}>
+                    <thead>
+                        <tr>
+                            <th style={thStyle}>Suffix (Match)</th>
+                            <th style={thStyle}>Name Format</th>
+                            <th style={{ ...thStyle, width: '60px' }}>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {safeSuffixes.map((s, i) => {
+                            const isDup = duplicateFleetSuffixes.has(s.suffix);
+                            return (
+                                <tr key={i} style={{ background: isDup ? '#fff0f0' : 'transparent' }}>
+                                    <td style={tdStyle}>
+                                        <input
+                                            value={s.suffix}
+                                            onChange={(e) => updateRow(i, 'suffix', e.target.value)}
+                                            style={{ ...inputStyle, borderColor: isDup ? 'red' : '' }}
+                                            placeholder="ex. Sq."
+                                        />
+                                        {isDup && <div style={{ color: 'red', fontSize: '0.8em' }}>重複しています</div>}
+                                    </td>
+                                    <td style={tdStyle}>
+                                        <input
+                                            value={s.format}
+                                            onChange={(e) => updateRow(i, 'format', e.target.value)}
+                                            style={inputStyle}
+                                            placeholder="ex. {number}{type}隊"
+                                        />
+                                    </td>
+                                    <td style={tdStyle}>
+                                        <button onClick={() => deleteRow(i)} style={{ color: 'red' }}>×</button>
+                                    </td>
+                                </tr>
+                            );
+                        })}
+                    </tbody>
+                </table>
+                <button onClick={addRow} style={{ marginTop: '10px' }}>+ 追加</button>
+            </div>
+        );
+    };
+
     // --- Misc / App Settings Editor ---
     const renderMiscEditor = () => {
         return (
             <div>
                 <h3>その他設定 (App Settings)</h3>
                 <div style={{ marginTop: '10px' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', marginBottom: '10px' }}>
+                        <input
+                            type="checkbox"
+                            checked={appSettings?.autoConvertFleetName ?? true}
+                            onChange={(e) => setAppSettings({ ...appSettings, autoConvertFleetName: e.target.checked })}
+                            style={{ transform: 'scale(1.2)' }}
+                        />
+                        <span>
+                            <strong>部隊名の自動変換を有効にする (Auto-convert Fleet Name)</strong>
+                            <div style={{ fontSize: '0.9em', color: '#666' }}>
+                                部隊コード入力時に名称を自動入力します。
+                            </div>
+                        </span>
+                    </label>
+
                     <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
                         <input
                             type="checkbox"
@@ -336,6 +428,12 @@ const SettingsScreen = ({
                         部隊種別 (Fleet Types) {duplicateFleetTypes.size > 0 && <span style={{ color: 'red', fontWeight: 'bold' }}> (!)</span>}
                     </button>
                     <button
+                        onClick={() => setActiveTab('suffixes')}
+                        style={{ padding: '10px 20px', background: activeTab === 'suffixes' ? '#ddd' : 'transparent', border: 'none', borderBottom: activeTab === 'suffixes' ? '2px solid black' : 'none', cursor: 'pointer', fontSize: '16px' }}
+                    >
+                        コード形式 (Suffixes) {duplicateFleetSuffixes.size > 0 && <span style={{ color: 'red', fontWeight: 'bold' }}> (!)</span>}
+                    </button>
+                    <button
                         onClick={() => setActiveTab('misc')}
                         style={{ padding: '10px 20px', background: activeTab === 'misc' ? '#ddd' : 'transparent', border: 'none', borderBottom: activeTab === 'misc' ? '2px solid black' : 'none', cursor: 'pointer', fontSize: '16px' }}
                     >
@@ -347,6 +445,7 @@ const SettingsScreen = ({
                     {activeTab === 'types' && renderShipTypesEditor()}
                     {activeTab === 'classes' && renderShipClassesEditor()}
                     {activeTab === 'fleets' && renderFleetTypesEditor()}
+                    {activeTab === 'suffixes' && renderFleetSuffixesEditor()}
                     {activeTab === 'misc' && renderMiscEditor()}
                 </div>
             </div>

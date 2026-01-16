@@ -72,6 +72,7 @@ export const loadProject = async (file) => {
     const shipTypesFile = zip.file(`${configDir}ship_types.json`);
     const shipClassesFile = zip.file(`${configDir}ship_classes.json`);
     const fleetTypesFile = zip.file(`${configDir}fleet_types.json`);
+    const fleetSuffixesFile = zip.file(`${configDir}fleet_suffixes.json`);
     const appSettingsFile = zip.file(`${configDir}app_settings.json`);
 
     if (shipTypesFile) {
@@ -82,6 +83,9 @@ export const loadProject = async (file) => {
     }
     if (fleetTypesFile) {
         try { data.overrides.fleetTypes = JSON.parse(await fleetTypesFile.async("string")); } catch (e) { console.error(e); }
+    }
+    if (fleetSuffixesFile) {
+        try { data.overrides.fleetSuffixes = JSON.parse(await fleetSuffixesFile.async("string")); } catch (e) { console.error(e); }
     }
     if (appSettingsFile) {
         try { data.overrides.appSettings = JSON.parse(await appSettingsFile.async("string")); } catch (e) { console.error(e); }
@@ -301,6 +305,7 @@ export const saveProject = async (state) => {
         if (state.overrides.shipTypes) configDir.file("ship_types.json", JSON.stringify(state.overrides.shipTypes, null, 2));
         if (state.overrides.shipClasses) configDir.file("ship_classes.json", JSON.stringify(state.overrides.shipClasses, null, 2));
         if (state.overrides.fleetTypes) configDir.file("fleet_types.json", JSON.stringify(state.overrides.fleetTypes, null, 2));
+        if (state.overrides.fleetSuffixes) configDir.file("fleet_suffixes.json", JSON.stringify(state.overrides.fleetSuffixes, null, 2));
         if (state.overrides.appSettings) configDir.file("app_settings.json", JSON.stringify(state.overrides.appSettings, null, 2));
     }
 

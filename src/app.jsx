@@ -66,9 +66,10 @@ function App() {
     const [shipTypes, setShipTypes] = useState([]);
     const [shipClasses, setShipClasses] = useState([]);
     const [fleetTypes, setFleetTypes] = useState([]);
+    const [fleetSuffixes, setFleetSuffixes] = useState([]); // New: Fleet Suffixes Configuration
 
     // App Settings
-    const [appSettings, setAppSettings] = useState({ showFleetNameOnHover: true });
+    const [appSettings, setAppSettings] = useState({ showFleetNameOnHover: true, autoConvertFleetName: true, fleetCodeSuffix: 'Sq.' }); // Updated defaults
 
     // --- Session Init & Socket Connection ---
     useEffect(() => {
@@ -138,6 +139,7 @@ function App() {
                         if (data.overrides.shipTypes) setShipTypes(data.overrides.shipTypes);
                         if (data.overrides.shipClasses) setShipClasses(data.overrides.shipClasses);
                         if (data.overrides.fleetTypes) setFleetTypes(data.overrides.fleetTypes);
+                        if (data.overrides.fleetSuffixes) setFleetSuffixes(data.overrides.fleetSuffixes);
                     }
                 }
             }
@@ -173,6 +175,7 @@ function App() {
                 if (overrides.shipTypes) setShipTypes(overrides.shipTypes);
                 if (overrides.shipClasses) setShipClasses(overrides.shipClasses);
                 if (overrides.fleetTypes) setFleetTypes(overrides.fleetTypes);
+                if (overrides.fleetSuffixes) setFleetSuffixes(overrides.fleetSuffixes);
                 if (overrides.appSettings) setAppSettings(prev => ({ ...prev, ...overrides.appSettings }));
                 console.log("Config synced from server");
             }
@@ -239,6 +242,62 @@ function App() {
                     setFleetTypes(fleetTypesData);
                 }
 
+                // 3. Load Fleet Suffixes & Auto-Migration
+                const savedSuffixes = localStorage.getItem('restia_fleet_suffixes');
+                let initialSuffixes = [];
+
+                if (savedSuffixes) {
+                    try {
+                        initialSuffixes = JSON.parse(savedSuffixes);
+                    } catch (e) { console.error("Failed to parse saved suffixes", e); }
+                }
+
+                // Determines final fleetTypes to use for migration check
+                const finalFleetTypes = (localStorage.getItem('restia_fleet_config') && JSON.parse(localStorage.getItem('restia_fleet_config')).fleetTypes)
+                    ? JSON.parse(localStorage.getItem('restia_fleet_config')).fleetTypes
+                    : baseFleetTypes.length > 0 ? baseFleetTypes : await loadCSV('/assets/fleets/fleet_type.csv');
+
+                if (initialSuffixes.length === 0 && finalFleetTypes.length > 0) {
+                    // Check common suffix
+                    const names = finalFleetTypes.map(f => f.name_of_fleet || "");
+                    if (names.length > 0) {
+                        let common = "";
+                        const first = names[0];
+                        for (let i = 1; i <= first.length; i++) {
+                            const suffix = first.slice(-i);
+                            if (names.every(n => n.endsWith(suffix))) {
+                                common = suffix;
+                            } else {
+                                break;
+                            }
+                        }
+
+                        if (common.length > 0) {
+                            console.log("Detected common suffix:", common);
+                            initialSuffixes = [{ suffix: 'Sq.', format: `{number}{type}${common}` }];
+
+                            // Update Fleet Types (Strip Suffix)
+                            const migratedFleetTypes = finalFleetTypes.map(f => ({
+                                ...f,
+                                name_of_fleet: f.name_of_fleet.slice(0, -common.length)
+                            }));
+                            setFleetTypes(migratedFleetTypes);
+                            // Also update base if we fell back to it? No, separated.
+                        } else {
+                            initialSuffixes = [{ suffix: 'Sq.', format: '{number}{type}' }];
+                            if (fleetTypes.length === 0) setFleetTypes(finalFleetTypes); // Ensure set if not already
+                        }
+                    } else {
+                        initialSuffixes = [{ suffix: 'Sq.', format: '{number}{type}' }];
+                        if (fleetTypes.length === 0) setFleetTypes(finalFleetTypes);
+                    }
+                } else {
+                    // Normal Load
+                    if (fleetTypes.length === 0 && finalFleetTypes.length > 0) setFleetTypes(finalFleetTypes);
+                }
+
+                setFleetSuffixes(initialSuffixes);
+
                 // Load App Settings
                 const savedSettings = localStorage.getItem('restia_app_settings');
                 if (savedSettings) {
@@ -257,6 +316,11 @@ function App() {
         const config = { shipTypes, shipClasses, fleetTypes };
         localStorage.setItem('restia_fleet_config', JSON.stringify(config));
     }, [shipTypes, shipClasses, fleetTypes]);
+
+    useEffect(() => {
+        if (fleetSuffixes.length === 0) return;
+        localStorage.setItem('restia_fleet_suffixes', JSON.stringify(fleetSuffixes));
+    }, [fleetSuffixes]);
 
     useEffect(() => {
         localStorage.setItem('restia_app_settings', JSON.stringify(appSettings));
@@ -306,6 +370,7 @@ function App() {
                     if (data.overrides.shipTypes) setShipTypes(data.overrides.shipTypes);
                     if (data.overrides.shipClasses) setShipClasses(data.overrides.shipClasses);
                     if (data.overrides.fleetTypes) setFleetTypes(data.overrides.fleetTypes);
+                    if (data.overrides.fleetSuffixes) setFleetSuffixes(data.overrides.fleetSuffixes);
 
                     // App Settings Override or Default
                     if (data.overrides.appSettings) {
@@ -371,6 +436,7 @@ function App() {
                             if (hasChanged(baseShipTypes, shipTypes)) overrides.shipTypes = shipTypes;
                             if (hasChanged(baseShipClasses, shipClasses)) overrides.shipClasses = shipClasses;
                             if (hasChanged(baseFleetTypes, fleetTypes)) overrides.fleetTypes = fleetTypes;
+                            overrides.fleetSuffixes = fleetSuffixes;
                             overrides.appSettings = appSettings; // Always save settings
 
                             await saveProject({ layers, activeLayerId, overrides });
@@ -413,7 +479,10 @@ function App() {
                     editingShipIndices={editingShipIndices}
                     shipTypes={shipTypes}
                     shipClasses={shipClasses}
+
                     fleetTypes={fleetTypes}
+                    fleetSuffixes={fleetSuffixes} // Provided
+                    appSettings={appSettings} // Provided
                     isSpectator={isSpectator}
                 />
             ) : currentScreen === 'settings' ? (
@@ -422,6 +491,7 @@ function App() {
                     shipTypes={shipTypes} setShipTypes={setShipTypes}
                     shipClasses={shipClasses} setShipClasses={setShipClasses}
                     fleetTypes={fleetTypes} setFleetTypes={setFleetTypes}
+                    fleetSuffixes={fleetSuffixes} setFleetSuffixes={setFleetSuffixes} // Provided
                     appSettings={appSettings} setAppSettings={setAppSettings}
                     isSpectator={isSpectator}
                 />

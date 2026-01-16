@@ -415,6 +415,11 @@ const MainScreen = ({
             deleteUnit(contextMenu.unitId);
         }
         else if (action === 'edit' && targetUnit) {
+            // Find layer of targetUnit
+            const unitLayer = layers.find(l => l.units.some(u => u.id === targetUnit.id));
+            if (unitLayer && unitLayer.id !== activeLayerId) {
+                setActiveLayerId(unitLayer.id);
+            }
             setSelectedUnitId(targetUnit.id);
             onSwitchScreen();
         }
@@ -446,6 +451,12 @@ const MainScreen = ({
                 });
                 return { ...u, fleets: newFleets };
             });
+
+            // Ensure active layer is switched so EditScreen finds it
+            const unitLayer = layers.find(l => l.units.some(u => u.id === targetUnit.id));
+            if (unitLayer && unitLayer.id !== activeLayerId) {
+                setActiveLayerId(unitLayer.id);
+            }
 
             // Auto open edit?
             setSelectedUnitId(targetUnit.id);

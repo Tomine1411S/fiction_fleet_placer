@@ -5,7 +5,7 @@ import { parseShipString, formatShipString } from '../utils/parser';
 const MAP_WIDTH = 800;
 const MAP_HEIGHT = 600;
 
-const EditScreen = ({ units, setUnits, mapImage, onSwitchScreen, selectedUnitId, editingShipIndices, shipTypes, shipClasses, fleetTypes, isSpectator }) => {
+const EditScreen = ({ units, setUnits, mapImage, onSwitchScreen, selectedUnitId, editingShipIndices, shipTypes, shipClasses, fleetTypes, fleetSuffixes, appSettings, isSpectator }) => {
 
     const targetPin = units.find(u => u.id === selectedUnitId);
 
@@ -37,14 +37,33 @@ const EditScreen = ({ units, setUnits, mapImage, onSwitchScreen, selectedUnitId,
 
         // Auto-generate Name on Code change
         if (field === 'code') {
-            const regex = /^(\d{3,4})([A-Z]{1,2})Sq\.$/;
-            const match = value.match(regex);
-            if (match) {
-                const number = match[1];
-                const typeCode = match[2];
-                const typeObj = fleetTypes.find(t => t.type === typeCode);
-                if (typeObj) {
-                    updatedFleet.name = `${number}${typeObj.name_of_fleet}`;
+            const autoConvert = appSettings?.autoConvertFleetName ?? true;
+            if (autoConvert) {
+                const suffixes = (fleetSuffixes && fleetSuffixes.length > 0)
+                    ? fleetSuffixes
+                    : [{ suffix: 'Sq.', format: '{number}{type}Sq.' }]; // Fallback if empty (shouldn't happen with migration)
+
+                for (const s of suffixes) {
+                    if (!s.suffix) continue;
+                    // Escape suffix for regex
+                    const escapedSuffix = s.suffix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    // Regex: Start + Number(3-4) + Type(Any non-greedy) + Suffix + End
+                    const regex = new RegExp(`^(\\d{3,4})(.+?)${escapedSuffix}$`);
+                    const match = value.match(regex);
+
+                    if (match) {
+                        const number = match[1];
+                        const typeCode = match[2];
+                        const typeObj = fleetTypes.find(t => t.type === typeCode);
+
+                        if (typeObj) {
+                            let name = s.format || '{number}{type}';
+                            name = name.replace('{number}', number);
+                            name = name.replace('{type}', typeObj.name_of_fleet);
+                            updatedFleet.name = name;
+                            break; // Stop after first match
+                        }
+                    }
                 }
             }
         }
