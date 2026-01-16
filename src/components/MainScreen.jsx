@@ -452,6 +452,11 @@ const MainScreen = ({
             onSwitchScreen();
         }
         else if (action === 'split' && targetUnit) {
+            // FIX: Ensure active layer is correct
+            const unitLayer = layers.find(l => l.units.some(u => u.id === targetUnit.id));
+            if (unitLayer && unitLayer.id !== activeLayerId) {
+                setActiveLayerId(unitLayer.id);
+            }
             setSelectedUnitId(targetUnit.id);
             onOpenSplitScreen();
         }
@@ -1050,8 +1055,8 @@ const MainScreen = ({
                                                                         display: 'flex',
                                                                         justifyContent: 'center',
                                                                         alignItems: 'center',
-                                                                        width: '1.4em',
-                                                                        height: '1.4em',
+                                                                        width: '2.2em',
+                                                                        height: '1.6em',
                                                                         overflow: 'hidden'
                                                                     }}>
                                                                         {typeCode && (
@@ -1069,7 +1074,7 @@ const MainScreen = ({
                                                                         )}
                                                                     </div>
                                                                     <span style={{ fontWeight: 'bold', textAlign: 'left' }}>
-                                                                        {f.code}{appSettings?.showFleetNameOnHover !== false ? ':' : ''}
+                                                                        {f.code}{appSettings?.showFleetNameOnHover !== false ? ' :' : ''}
                                                                     </span>
                                                                     <span>{appSettings?.showFleetNameOnHover !== false ? f.name : ''}</span>
                                                                 </React.Fragment>

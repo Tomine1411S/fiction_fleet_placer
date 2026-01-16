@@ -7,6 +7,9 @@ const FleetSplitScreen = ({ units, setUnits, onSwitchScreen, selectedUnitId, shi
     const [sourceFleets, setSourceFleets] = useState([]);
     const [newFleets, setNewFleets] = useState([]);
 
+    // For Real-time Reordering
+    const [dragState, setDragState] = useState(null); // { level: 'fleet', origin: 'source'/'new', index: number }
+
     useEffect(() => {
         if (sourceUnit && sourceUnit.fleets) {
             // Deep copy to avoid mutating original state until save
@@ -25,14 +28,57 @@ const FleetSplitScreen = ({ units, setUnits, onSwitchScreen, selectedUnitId, shi
         return `${typeName} ${shipId} ${ship.name}`;
     };
 
+    const handleAddFleet = (origin) => {
+        const newFleet = {
+            id: Date.now() + Math.random(),
+            code: 'New',
+            name: '新規艦隊',
+            ships: [],
+            remarks: ''
+        };
+
+        if (origin === 'source') {
+            setSourceFleets([...sourceFleets, newFleet]);
+        } else {
+            setNewFleets([...newFleets, newFleet]);
+        }
+    };
+
     // --- Drag and Drop Handlers ---
 
     // dataTransfer format: JSON string 
     // { level: 'ship'|'fleet', origin: 'source'|'new', fleetIndex: number, shipIndex: number }
     const handleDragStart = (e, level, origin, fleetIndex, shipIndex = null) => {
+        // Set metadata for cross-pane drop
         e.dataTransfer.setData('application/json', JSON.stringify({ level, origin, fleetIndex, shipIndex }));
         e.dataTransfer.effectAllowed = 'move';
         e.stopPropagation(); // Prevent fleet drag when dragging ship
+
+        // Set Local State for Real-time reordering
+        if (level === 'fleet') {
+            setDragState({ level, origin, index: fleetIndex });
+        }
+    };
+
+    const handleDragEnd = () => {
+        setDragState(null);
+    };
+
+    const handleFleetDragEnter = (e, targetOrigin, targetIndex) => {
+        e.preventDefault();
+        if (!dragState || dragState.level !== 'fleet') return;
+        if (dragState.origin !== targetOrigin) return; // Only reorder within same list for now (Cross-list is handled by Drop)
+        if (dragState.index === targetIndex) return;
+
+        // Execute Swap
+        const listSetter = targetOrigin === 'source' ? setSourceFleets : setNewFleets;
+        const list = targetOrigin === 'source' ? [...sourceFleets] : [...newFleets]; // Clone
+
+        const [movedItem] = list.splice(dragState.index, 1);
+        list.splice(targetIndex, 0, movedItem);
+
+        listSetter(list);
+        setDragState({ ...dragState, index: targetIndex }); // Update index to match new position
     };
 
     const handleDragOver = (e) => {
@@ -177,24 +223,30 @@ const FleetSplitScreen = ({ units, setUnits, onSwitchScreen, selectedUnitId, shi
             fleets: sourceFleets
         };
 
-        // 2. Create New Unit
-        // Positioned to the left of source (-100px or so)
-        const newUnit = {
-            id: newUnitId,
-            type: 'fleet',
-            x: sourceUnit.x - 100,
-            y: sourceUnit.y,
-            displayName: 'New Split Fleet',
-            fleets: newFleets,
-            color: sourceUnit.color || '#FF0000'
-        };
+        // 2. Create New Unit (Conditional)
+        if (newFleets.length > 0) {
+            const newUnit = {
+                id: newUnitId,
+                type: 'fleet',
+                x: sourceUnit.x - 100,
+                y: sourceUnit.y,
+                displayName: 'New Split Fleet',
+                fleets: newFleets,
+                color: sourceUnit.color || '#FF0000'
+            };
 
-        // 3. Update Global State
-        // Remove old source unit, add updated source unit and new unit
-        const updatedUnits = units.map(u => u.id === sourceUnit.id ? updatedSourceUnit : u);
-        updatedUnits.push(newUnit);
+            // 3. Update Global State
+            // Remove old source unit, add updated source unit and new unit
+            const updatedUnits = units.map(u => u.id === sourceUnit.id ? updatedSourceUnit : u);
+            updatedUnits.push(newUnit);
 
-        setUnits(updatedUnits);
+            setUnits(updatedUnits);
+        } else {
+            // Only update Source Unit
+            const updatedUnits = units.map(u => u.id === sourceUnit.id ? updatedSourceUnit : u);
+            setUnits(updatedUnits);
+        }
+
         onSwitchScreen(); // Return to main
     };
 
@@ -219,16 +271,28 @@ const FleetSplitScreen = ({ units, setUnits, onSwitchScreen, selectedUnitId, shi
                     onDrop={(e) => handleFleetDropIntoPane(e, 'source')}
                     style={{ flex: 1, background: 'white', border: '1px solid #ccc', borderRadius: '8px', padding: '10px', overflowY: 'auto', display: 'flex', flexDirection: 'column' }}
                 >
-                    <h3 style={{ margin: '0 0 10px 0', borderBottom: '2px solid red' }}>分割元艦隊 (移動前)</h3>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid red', marginBottom: '10px' }}>
+                        <h3 style={{ margin: 0 }}>分割元艦隊 (移動前)</h3>
+                        <button className="btn" style={{ fontSize: '0.8em', padding: '2px 8px' }} onClick={() => handleAddFleet('source')}>＋艦隊追加</button>
+                    </div>
                     {sourceFleets.map((fleet, fIdx) => (
                         <div
                             key={fIdx}
                             className="fleet-box"
                             draggable={!isSpectator}
                             onDragStart={(e) => handleDragStart(e, 'fleet', 'source', fIdx)}
+                            onDragEnd={handleDragEnd}
                             onDragOver={handleDragOver}
+                            onDragEnter={(e) => handleFleetDragEnter(e, 'source', fIdx)}
                             onDrop={(e) => handleFleetOrShipDrop(e, 'source', fIdx)}
-                            style={{ border: '1px solid #eee', padding: '10px', marginBottom: '10px', background: '#fff', cursor: 'grab' }}
+                            style={{
+                                border: '1px solid #ccc',
+                                padding: '10px',
+                                marginBottom: '10px',
+                                background: (dragState && dragState.level === 'fleet' && dragState.origin === 'source' && dragState.index === fIdx) ? '#e6f7ff' : '#f0f0f0',
+                                cursor: 'grab',
+                                opacity: (dragState && dragState.level === 'fleet' && dragState.origin === 'source' && dragState.index === fIdx) ? 0.5 : 1
+                            }}
                         >
                             <div style={{ fontWeight: 'bold', marginBottom: '5px' }}>{fleet.code} {fleet.name}</div>
                             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px', minHeight: '30px', background: '#fafafa', padding: '5px' }}>
@@ -266,16 +330,28 @@ const FleetSplitScreen = ({ units, setUnits, onSwitchScreen, selectedUnitId, shi
                     onDrop={(e) => handleFleetDropIntoPane(e, 'new')}
                     style={{ flex: 1, background: 'white', border: '1px solid #ccc', borderRadius: '8px', padding: '10px', overflowY: 'auto', display: 'flex', flexDirection: 'column' }}
                 >
-                    <h3 style={{ margin: '0 0 10px 0', borderBottom: '2px solid blue' }}>新規艦隊 (移動後)</h3>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid blue', marginBottom: '10px' }}>
+                        <h3 style={{ margin: 0 }}>新規艦隊 (移動後)</h3>
+                        <button className="btn" style={{ fontSize: '0.8em', padding: '2px 8px' }} onClick={() => handleAddFleet('new')}>＋艦隊追加</button>
+                    </div>
                     {newFleets.map((fleet, fIdx) => (
                         <div
                             key={fIdx}
                             className="fleet-box"
                             draggable={!isSpectator}
                             onDragStart={(e) => handleDragStart(e, 'fleet', 'new', fIdx)}
+                            onDragEnd={handleDragEnd}
                             onDragOver={handleDragOver}
+                            onDragEnter={(e) => handleFleetDragEnter(e, 'new', fIdx)}
                             onDrop={(e) => handleFleetOrShipDrop(e, 'new', fIdx)}
-                            style={{ border: '1px solid #eee', padding: '10px', marginBottom: '10px', background: '#fff', cursor: 'grab' }}
+                            style={{
+                                border: '1px solid #ccc',
+                                padding: '10px',
+                                marginBottom: '10px',
+                                background: (dragState && dragState.level === 'fleet' && dragState.origin === 'new' && dragState.index === fIdx) ? '#e6f7ff' : '#f0f0f0',
+                                cursor: 'grab',
+                                opacity: (dragState && dragState.level === 'fleet' && dragState.origin === 'new' && dragState.index === fIdx) ? 0.5 : 1
+                            }}
                         >
                             <div style={{ fontWeight: 'bold', marginBottom: '5px' }}>{fleet.code} {fleet.name}</div>
                             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px', minHeight: '30px', background: '#fafafa', padding: '5px' }}>
