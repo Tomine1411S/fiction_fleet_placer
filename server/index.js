@@ -44,6 +44,7 @@ io.on('connection', (socket) => {
                 sessions[sessionId] = {
                     layers: [{ id: 1, name: 'Layer 1', visible: true, units: [], mapImage: null }],
                     activeLayerId: 1,
+                    fleets: {}, // Initialize fleets
                     overrides: {},
                     lastUpdated: Date.now(),
                     spectatorId: newSpectatorId
@@ -70,6 +71,7 @@ io.on('connection', (socket) => {
             socket.emit('init_data', {
                 layers: sessions[sessionId].layers || [],
                 activeLayerId: sessions[sessionId].activeLayerId || 1,
+                fleets: sessions[sessionId].fleets || {},
                 overrides: sessions[sessionId].overrides
             });
         } else {
@@ -81,7 +83,7 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('update_data', ({ sessionId, layers, activeLayerId }) => {
+    socket.on('update_data', ({ sessionId, layers, activeLayerId, fleets }) => {
         // Security Check
         if (socket.data.isReadOnly) {
             console.warn(`Socket ${socket.id} attempted update_data without permission.`);
@@ -91,16 +93,17 @@ io.on('connection', (socket) => {
         const realSessionId = socket.data.sessionId || sessionId;
 
         if (!sessions[realSessionId]) {
-            sessions[realSessionId] = { layers: [], activeLayerId: 1, lastUpdated: 0 };
+            sessions[realSessionId] = { layers: [], activeLayerId: 1, fleets: {}, lastUpdated: 0 };
         }
 
         // Update store
-        sessions[realSessionId].layers = layers;
+        if (layers) sessions[realSessionId].layers = layers;
         if (activeLayerId) sessions[realSessionId].activeLayerId = activeLayerId;
+        if (fleets) sessions[realSessionId].fleets = fleets;
         sessions[realSessionId].lastUpdated = Date.now();
 
         // Broadcast
-        socket.to(realSessionId).emit('server_update', { layers, activeLayerId });
+        socket.to(realSessionId).emit('server_update', { layers, activeLayerId, fleets });
     });
 
     // Legacy map update (kept but likely unused if layers handle map)
